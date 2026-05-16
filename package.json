@@ -24,7 +24,6 @@
     "expo": "~54.0.33",
     "expo-audio": "^55.0.13",
     "expo-auth-session": "^55.0.12",
-    "expo-av": "~16.0.8",
     "expo-blur": "~15.0.8",
     "expo-constants": "~18.0.13",
     "expo-crypto": "~15.0.8",

@@ -5,16 +5,16 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { useState } from "react";
 import {
-    ActivityIndicator,
-    Image,
-    Platform,
-    ScrollView,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View
+  ActivityIndicator,
+  Image,
+  Platform,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -51,7 +51,7 @@ export default function StudentRegister() {
 
   const boards = ["CBSE", "ICSE", "State Board", "Other"];
   
-  const classOptions = ["5", "6", "7", "8", "9", "10", "11", "12", "Pre-University"];
+  const classOptions = ["5", "6", "7", "8", "9", "10", "11", "12",];
   
   const languageOptions = [
     "English",

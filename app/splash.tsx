@@ -4,9 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import {
   Animated,
   Easing,
-  Image,
   StyleSheet,
-  View
+  Text,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -93,29 +93,26 @@ export default function SplashScreen() {
       <SafeAreaView style={styles.safe}>
         <View style={styles.center}>
           
-          {/* 🔥 LOGO */}
+          {/* BRAND */}
           <Animated.View
             style={{
-              transform: [
-                { scale: scaleAnim },
-                { translateY: translateY },
-              ],
+              transform: [{ scale: scaleAnim }, { translateY: translateY }],
               opacity: opacityAnim,
+              alignItems: "center",
             }}
           >
-            <Image
-             source={require("@/assets/images/logo.png")} // 👈 your logo
-              style={styles.logo}
-              resizeMode="contain"
-            />
+            <Text style={styles.emoji}>🎓</Text>
+            <Text style={styles.brand}>
+              Vidya<Text style={styles.gold}>AI</Text>
+            </Text>
           </Animated.View>
 
-          {/* 🚀 Tagline */}
+          {/* TAGLINE */}
           <Animated.Text style={[styles.tagline, { opacity: opacityAnim }]}>
             Learn • Compete • Earn 🚀
           </Animated.Text>
 
-          {/* 💼 Branding */}
+          {/* POWERED BY */}
           <Animated.Text style={[styles.powered, { opacity: opacityAnim }]}>
             Powered by Shikshakool Academy Pvt. Ltd.
           </Animated.Text>
@@ -140,9 +137,22 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 
-  logo: {
-    width: 190,
-    height: 190,
+  emoji: {
+    fontSize: 72,
+    textAlign: "center",
+    marginBottom: 12,
+  },
+
+  brand: {
+    fontSize: 48,
+    fontWeight: "900",
+    color: "#fff",
+    textAlign: "center",
+    letterSpacing: 2,
+  },
+
+  gold: {
+    color: "#FFD700",
   },
 
   tagline: {

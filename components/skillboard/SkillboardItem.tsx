@@ -1,3 +1,4 @@
+import { useTheme } from "@/context/ThemeContext";
 import { useState } from "react";
 import { Image, StyleSheet, Text, View } from "react-native";
 
@@ -21,6 +22,7 @@ const formatNumber = (num: number | undefined) => {
 };
 
 export default function SkillboardItem({ item, index }: SkillboardItemProps) {
+  const { colors } = useTheme();
   const [imageError, setImageError] = useState(false);
 
   const hasProfilePic = item.profilePic && !imageError;
@@ -30,8 +32,8 @@ export default function SkillboardItem({ item, index }: SkillboardItemProps) {
   const likes = formatNumber(item.totalLikes);
 
   return (
-    <View style={styles.row}>
-      <Text style={[styles.rank, index < 3 && { color: "#fbbf24" }]}>
+    <View style={[styles.row, { backgroundColor: colors.card }]}>
+      <Text style={[styles.rank, { color: index < 3 ? "#fbbf24" : colors.text }]}>
         #{index + 1}
       </Text>
 
@@ -42,14 +44,14 @@ export default function SkillboardItem({ item, index }: SkillboardItemProps) {
           onError={() => setImageError(true)}
         />
       ) : (
-        <View style={[styles.avatar, styles.fallbackAvatar]}>
-          <Text style={styles.initials}>{initials}</Text>
+        <View style={[styles.avatar, styles.fallbackAvatar, { backgroundColor: colors.accent }]}>
+          <Text style={[styles.initials, { color: colors.text }]}>{initials}</Text>
         </View>
       )}
 
       <View style={{ flex: 1 }}>
-        <Text style={styles.name}>{item.name || "Unknown"}</Text>
-        <Text style={styles.sub}>
+        <Text style={[styles.name, { color: colors.text }]}>{item.name || "Unknown"}</Text>
+        <Text style={[styles.sub, { color: colors.textSecondary }]}>
           👁 {views} • ❤️ {likes}
         </Text>
       </View>
@@ -63,7 +65,6 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#1f2937",
     marginHorizontal: 12,
     marginVertical: 6,
     padding: 12,
@@ -71,7 +72,6 @@ const styles = StyleSheet.create({
   },
 
   rank: {
-    color: "#fff",
     width: 30,
     fontWeight: "700",
   },
@@ -84,24 +84,20 @@ const styles = StyleSheet.create({
   },
 
   fallbackAvatar: {
-    backgroundColor: "#3b82f6",
     justifyContent: "center",
     alignItems: "center",
   },
 
   initials: {
-    color: "#fff",
     fontWeight: "700",
     fontSize: 14,
   },
 
   name: {
-    color: "#fff",
     fontWeight: "600",
   },
 
   sub: {
-    color: "#94a3b8",
     fontSize: 12,
   },
 

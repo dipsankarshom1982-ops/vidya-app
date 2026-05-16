@@ -7,6 +7,7 @@ import {
     View,
 } from "react-native";
 
+import { useTheme } from "@/context/ThemeContext";
 import { listenLeaderboard } from "@/lib/listenLeaderboard";
 
 // 🔥 MOCK USER (replace with auth user)
@@ -17,6 +18,7 @@ const user = {
 };
 
 export default function LeaderboardScreen() {
+  const { colors } = useTheme();
   const [data, setData] = useState<any[]>([]);
   const [tab, setTab] = useState("daily");
   const [scope, setScope] = useState("country");
@@ -47,16 +49,16 @@ export default function LeaderboardScreen() {
     myIndex > 0 ? data[myIndex - 1]?.points - myData?.points : 0;
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* 🔥 TABS */}
       <View style={styles.tabs}>
         {["daily", "weekly", "monthly", "yearly"].map((t) => (
           <TouchableOpacity
             key={t}
             onPress={() => setTab(t)}
-            style={[styles.tab, tab === t && styles.activeTab]}
+            style={[styles.tab, tab === t && { backgroundColor: colors.card }]}
           >
-            <Text style={styles.tabText}>{t.toUpperCase()}</Text>
+            <Text style={[styles.tabText, { color: colors.text }]}>{t.toUpperCase()}</Text>
           </TouchableOpacity>
         ))}
       </View>
@@ -69,7 +71,7 @@ export default function LeaderboardScreen() {
             onPress={() => setScope(s)}
             style={[styles.scope, scope === s && styles.activeScope]}
           >
-            <Text style={styles.scopeText}>{s}</Text>
+            <Text style={[styles.scopeText, { color: colors.text }]}>{s}</Text>
           </TouchableOpacity>
         ))}
       </View>
@@ -78,9 +80,9 @@ export default function LeaderboardScreen() {
       <View style={styles.podium}>
         {podium.map((u) => (
           <View key={u.userId} style={styles.podItem}>
-            <Text style={styles.rank}>#{u.rank}</Text>
-            <Text style={styles.name}>{u.name}</Text>
-            <Text style={styles.points}>{u.points}</Text>
+            <Text style={[styles.rank, { color: colors.text }]}>#{u.rank}</Text>
+            <Text style={[styles.name, { color: colors.text }]}>{u.name}</Text>
+            <Text style={[styles.points, { color: colors.text }]}>{u.points}</Text>
           </View>
         ))}
       </View>
@@ -90,19 +92,19 @@ export default function LeaderboardScreen() {
         data={rest}
         keyExtractor={(item) => item.userId}
         renderItem={({ item }) => (
-          <View style={styles.row}>
-            <Text style={styles.rank}>#{item.rank}</Text>
+          <View style={[styles.row, { borderBottomColor: colors.border }]}>
+            <Text style={[styles.rank, { color: colors.text }]}>#{item.rank}</Text>
 
             <View style={{ flex: 1 }}>
-              <Text style={styles.name}>{item.name}</Text>
-              <Text style={styles.sub}>
+              <Text style={[styles.name, { color: colors.text }]}>{item.name}</Text>
+              <Text style={[styles.sub, { color: colors.textSecondary }]}>
                 {item.state} · Class {item.class}
               </Text>
             </View>
 
-            <Text style={styles.points}>{item.points}</Text>
+            <Text style={[styles.points, { color: colors.text }]}>{item.points}</Text>
 
-            <Text style={styles.trend}>
+            <Text style={[styles.trend, { color: colors.text }]}>
               {item.trend === "up"
                 ? "▲"
                 : item.trend === "down"
@@ -116,11 +118,11 @@ export default function LeaderboardScreen() {
       {/* 👤 YOU */}
       {myData && (
         <View style={styles.meBox}>
-          <Text style={styles.meText}>
+          <Text style={[styles.meText, { color: colors.text }]}>
             You: #{myData.rank} · {myData.points} pts
           </Text>
           {gap > 0 && (
-            <Text style={styles.gapText}>
+            <Text style={[styles.gapText, { color: colors.textSecondary }]}>
               {gap} pts to next rank
             </Text>
           )}
@@ -134,7 +136,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     padding: 12,
-    backgroundColor: "#fff",
   },
 
   tabs: {
@@ -149,12 +150,8 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     marginHorizontal: 2,
   },
-  activeTab: {
-    backgroundColor: "#000",
-  },
   tabText: {
     fontSize: 12,
-    color: "#000",
   },
 
   scopes: {
@@ -204,7 +201,6 @@ const styles = StyleSheet.create({
 
   sub: {
     fontSize: 11,
-    color: "#777",
   },
 
   points: {
@@ -231,6 +227,5 @@ const styles = StyleSheet.create({
 
   gapText: {
     fontSize: 12,
-    color: "#555",
   },
 });

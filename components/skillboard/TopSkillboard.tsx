@@ -1,3 +1,4 @@
+import { useTheme } from "@/context/ThemeContext";
 import { useState } from "react";
 import { Image, StyleSheet, Text, View } from "react-native";
 import Animated, {
@@ -24,6 +25,7 @@ const formatNumber = (num: number | undefined) => {
 };
 
 function TopCard({ user, index, scale }: { user: TopUser; index: number; scale: SharedValue<number> }) {
+  const { colors } = useTheme();
   const [imageError, setImageError] = useState(false);
 
   const animatedStyle = useAnimatedStyle(() => ({
@@ -45,18 +47,20 @@ function TopCard({ user, index, scale }: { user: TopUser; index: number; scale: 
           onError={() => setImageError(true)}
         />
       ) : (
-        <View style={[styles.avatar, styles.fallbackAvatar]}>
-          <Text style={styles.initials}>{initials}</Text>
+        <View style={[styles.avatar, styles.fallbackAvatar, { backgroundColor: colors.accent }]}>
+          <Text style={[styles.initials, { color: colors.text }]}>{initials}</Text>
         </View>
       )}
 
-      <Text style={styles.name}>{user.name || "Unknown"}</Text>
-      <Text style={styles.score}>{formatNumber(score)}</Text>
+      <Text style={[styles.name, { color: colors.text }]}>{user.name || "Unknown"}</Text>
+      <Text style={[styles.score, { color: colors.accent }]}>{formatNumber(score)}</Text>
     </Animated.View>
   );
 }
 
 export default function TopSkillboard({ data }: { data?: TopUser[] }) {
+  const { colors } = useTheme();
+
   // Create animated values for each position
   const scales = (data || []).map((_, index) =>
     useSharedValue(index === 0 ? 1.2 : index === 1 ? 1.05 : 1)
@@ -65,7 +69,7 @@ export default function TopSkillboard({ data }: { data?: TopUser[] }) {
   if (!data || data.length === 0) {
     return (
       <View style={styles.emptyContainer}>
-        <Text style={styles.emptyText}>🏆 No rankings yet</Text>
+        <Text style={[styles.emptyText, { color: colors.textSecondary }]}>🏆 No rankings yet</Text>
       </View>
     );
   }
@@ -100,7 +104,6 @@ const styles = StyleSheet.create({
   },
 
   emptyText: {
-    color: "#94a3b8",
     fontSize: 14,
   },
 
@@ -117,25 +120,21 @@ const styles = StyleSheet.create({
   },
 
   fallbackAvatar: {
-    backgroundColor: "#3b82f6",
     justifyContent: "center",
     alignItems: "center",
   },
 
   initials: {
-    color: "#fff",
     fontWeight: "700",
     fontSize: 16,
   },
 
   name: {
-    color: "#fff",
     fontWeight: "700",
     fontSize: 13,
   },
 
   score: {
-    color: "#3b82f6",
     fontSize: 12,
     marginTop: 4,
   },

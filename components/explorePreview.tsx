@@ -1,3 +1,4 @@
+import { useTheme } from "@/context/ThemeContext";
 import { FlatList, Image, StyleSheet, Text, View } from "react-native";
 
 const exploreData = Array.from({ length: 8 }).map((_, i) => ({
@@ -6,9 +7,11 @@ const exploreData = Array.from({ length: 8 }).map((_, i) => ({
 }));
 
 export default function Explore() {
+  const { colors } = useTheme();
+
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>🔍 Explore</Text>
+      <Text style={[styles.title, { color: colors.text }]}>🔍 Explore</Text>
 
       <FlatList
         data={exploreData}
@@ -28,7 +31,6 @@ const styles = StyleSheet.create({
   },
 
   title: {
-    color: "#fff",
     fontSize: 18,
     fontWeight: "bold",
     marginBottom: 10,

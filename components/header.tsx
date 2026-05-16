@@ -1,9 +1,9 @@
 import {
-    Image,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View
+  Image,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from "react-native";
 
 import { useTheme } from "@/context/ThemeContext";
@@ -11,7 +11,14 @@ import { auth, db } from "@/lib/firebase";
 import { Ionicons } from "@expo/vector-icons";
 import { DrawerActions, useNavigation } from "@react-navigation/native";
 import { useRouter } from "expo-router";
-import { doc, getDoc } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  onSnapshot,
+  query,
+  where,
+} from "firebase/firestore";
 import { useEffect, useState } from "react";
 
 type Props = {
@@ -30,9 +37,10 @@ export default function Header({
   const { colors } = useTheme();
   const navigation = useNavigation<any>();
   const router = useRouter();
-  
+
   const [profilePic, setProfilePic] = useState<string | null>(null);
   const [walletCoins, setWalletCoins] = useState<number | null>(null);
+  const [unreadCount, setUnreadCount] = useState(0);
 
   // 📸 Fetch profile picture from database
   useEffect(() => {
@@ -45,6 +53,7 @@ export default function Header({
         const studentDoc = await getDoc(
           doc(db, "students", auth.currentUser.uid)
         );
+
         const userDoc = await getDoc(
           doc(db, "users", auth.currentUser.uid)
         );
@@ -60,6 +69,7 @@ export default function Header({
 
         if (studentDoc.exists()) {
           const studentCoins = studentDoc.data()?.stats?.coins;
+
           if (typeof studentCoins === "number") {
             setWalletCoins(studentCoins);
           }
@@ -72,6 +82,23 @@ export default function Header({
     fetchProfilePic();
   }, []);
 
+  // 🔔 Unread notifications listener
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+
+    const q = query(
+      collection(db, "notifications", uid, "items"),
+      where("read", "==", false)
+    );
+
+    const unsub = onSnapshot(q, (snap) => {
+      setUnreadCount(snap.size);
+    });
+
+    return unsub;
+  }, []);
+
   const handleMenuPress = () => {
     let currentNav: any = navigation;
 
@@ -80,6 +107,7 @@ export default function Header({
         currentNav.openDrawer();
         return;
       }
+
       currentNav = currentNav.getParent?.();
     }
 
@@ -92,20 +120,17 @@ export default function Header({
     }
   };
 
-  const handleCreatePress = () => {
-    router.push("/create-post");
-  };
-
   const handleProfilePress = () => {
     router.push("/mypost");
   };
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
+      
       {/* 🔥 HEADER */}
       <View style={styles.header}>
-        
-      {/* LEFT */}
+
+        {/* LEFT */}
         <View style={styles.leftSection}>
           {!hideMenu && (
             <TouchableOpacity onPress={handleMenuPress}>
@@ -123,40 +148,52 @@ export default function Header({
 
         {/* RIGHT */}
         <View style={styles.right}>
-          
+
           {/* COINS */}
           <View style={styles.coinBox}>
             <Ionicons name="logo-bitcoin" size={16} color="#FFD700" />
-            <Text style={styles.coinText}>{coins ?? walletCoins ?? 120}</Text>
+            <Text style={styles.coinText}>
+              {coins ?? walletCoins ?? 120}
+            </Text>
           </View>
 
-          {/* CREATE BUTTON */}
-          <TouchableOpacity 
-            style={[styles.createBtn, { backgroundColor: colors.accent }]}
-            onPress={handleCreatePress}
-          >
-            <Ionicons name="add" size={24} color="#fff" />
-          </TouchableOpacity>
-
           {/* NOTIFICATION */}
-          <TouchableOpacity style={styles.iconBtn}>
-            <Ionicons name="notifications-outline" size={22} color={colors.text} />
+          <TouchableOpacity
+            style={styles.iconBtn}
+            onPress={() => router.push("/notifications")}
+          >
+            <Ionicons
+              name="notifications-outline"
+              size={22}
+              color={colors.text}
+            />
+            {unreadCount > 0 && (
+              <View style={styles.notifBadge}>
+                <Text style={styles.notifBadgeText}>
+                  {unreadCount > 9 ? "9+" : unreadCount}
+                </Text>
+              </View>
+            )}
           </TouchableOpacity>
 
           {/* PROFILE */}
-<TouchableOpacity onPress={handleProfilePress}>
-  <Image
-    source={{
-      uri:
-        profilePic ||
-        `https://i.pravatar.cc/100?u=${auth.currentUser?.uid || "user"}`,
-    }}
-    style={styles.avatar}
-    defaultSource={{
-      uri: `https://i.pravatar.cc/100?u=${auth.currentUser?.uid || "user"}`,
-    }}
-  />
-</TouchableOpacity>
+          <TouchableOpacity onPress={handleProfilePress}>
+            <Image
+              source={{
+                uri:
+                  profilePic ||
+                  `https://i.pravatar.cc/100?u=${
+                    auth.currentUser?.uid || "user"
+                  }`,
+              }}
+              style={styles.avatar}
+              defaultSource={{
+                uri: `https://i.pravatar.cc/100?u=${
+                  auth.currentUser?.uid || "user"
+                }`,
+              }}
+            />
+          </TouchableOpacity>
 
         </View>
       </View>
@@ -178,7 +215,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
 
     paddingHorizontal: 15,
-    paddingVertical: 6, // 👈 reduced spacing (important)
+    paddingVertical: 6,
   },
 
   leftSection: {
@@ -224,12 +261,23 @@ const styles = StyleSheet.create({
     padding: 5,
   },
 
-  createBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: "center",
+  notifBadge: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    backgroundColor: "#EF4444",
+    borderRadius: 8,
+    minWidth: 16,
+    height: 16,
     alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 3,
+  },
+
+  notifBadgeText: {
+    color: "#fff",
+    fontSize: 9,
+    fontWeight: "800",
   },
 
   avatar: {

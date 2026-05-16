@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -8,14 +8,14 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View
+  View,
 } from "react-native";
 
-import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { auth, db } from "@/lib/firebase";
 import {
   signInWithEmailAndPassword
@@ -31,6 +31,12 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    AsyncStorage.getItem("lastEmail").then((saved) => {
+      if (saved) setEmail(saved);
+    });
+  }, []);
 
   // 🔐 LOGIN
   const handleLogin = async () => {
@@ -109,7 +115,7 @@ export default function LoginScreen() {
 
   // 🔑 FORGOT PASSWORD - Redirect to password reset page
   const handleForgotPassword = () => {
-    router.push("/password-reset" as any);
+    router.push({ pathname: "/password-reset", params: { email: email.trim() } } as any);
   };
 
   return (
@@ -138,7 +144,7 @@ export default function LoginScreen() {
           {/* EMAIL */}
           <View style={styles.inputWrapper}>
             <Text style={styles.label}>📧 Email</Text>
-            <BlurView intensity={50} style={styles.inputBox}>
+            <View style={styles.inputBox}>
               <TextInput
                 placeholder="Enter your email"
                 placeholderTextColor="#999"
@@ -148,13 +154,13 @@ export default function LoginScreen() {
                 autoCapitalize="none"
                 keyboardType="email-address"
               />
-            </BlurView>
+            </View>
           </View>
 
           {/* PASSWORD + EYE */}
           <View style={styles.inputWrapper}>
             <Text style={styles.label}>🔐 Password</Text>
-            <BlurView intensity={50} style={styles.inputBox}>
+            <View style={styles.inputBox}>
               <View style={styles.passwordRow}>
                 <TextInput
                   placeholder="Enter your password"
@@ -171,7 +177,7 @@ export default function LoginScreen() {
                   </Text>
                 </TouchableOpacity>
               </View>
-            </BlurView>
+            </View>
           </View>
 
           {/* FORGOT PASSWORD */}
@@ -279,6 +285,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.08)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.1)",
+    overflow: "hidden",
   },
 
   passwordRow: {

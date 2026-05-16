@@ -1,3 +1,4 @@
+import { useTheme } from "@/context/ThemeContext";
 import { Ionicons } from "@expo/vector-icons";
 import { useVideoPlayer, VideoView } from "expo-video";
 import { useState } from "react";
@@ -10,6 +11,7 @@ type Props = {
 };
 
 export default function ProfilePostCard({ item, onEdit, onDelete }: Props) {
+  const { colors } = useTheme();
   const [play, setPlay] = useState(false);
   const isPhotoPost = item.postType === "photo";
 
@@ -26,8 +28,8 @@ export default function ProfilePostCard({ item, onEdit, onDelete }: Props) {
   };
 
   return (
-    <View style={styles.card}>
-      
+    <View style={[styles.card, { borderColor: colors.border }]}>
+
       {/* 🔹 HEADER */}
       <View style={styles.header}>
         <View style={styles.userInfo}>
@@ -40,8 +42,8 @@ export default function ProfilePostCard({ item, onEdit, onDelete }: Props) {
             style={styles.avatar}
           />
           <View>
-            <Text style={styles.name}>{item.name || "User"}</Text>
-            <Text style={styles.time}>
+            <Text style={[styles.name, { color: colors.text }]}>{item.name || "User"}</Text>
+            <Text style={[styles.time, { color: colors.textSecondary }]}>
               {item.createdAt?.seconds
                 ? new Date(item.createdAt.seconds * 1000).toLocaleString()
                 : ""}
@@ -51,7 +53,7 @@ export default function ProfilePostCard({ item, onEdit, onDelete }: Props) {
 
         {/* 🔥 3 DOT MENU */}
         <TouchableOpacity onPress={handleMenu}>
-          <Ionicons name="ellipsis-vertical" size={20} color="#fff" />
+          <Ionicons name="ellipsis-vertical" size={20} color={colors.text} />
         </TouchableOpacity>
       </View>
 
@@ -88,7 +90,7 @@ export default function ProfilePostCard({ item, onEdit, onDelete }: Props) {
       )}
 
       {/* 🔹 CAPTION */}
-      <Text style={styles.caption}>
+      <Text style={[styles.caption, { color: colors.text }]}>
         {item.caption || item.description || item.title || ""}
       </Text>
     </View>
@@ -99,7 +101,6 @@ const styles = StyleSheet.create({
   card: {
     padding: 12,
     borderBottomWidth: 1,
-    borderColor: "#1e293b",
   },
   header: {
     flexDirection: "row",
@@ -118,11 +119,9 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   name: {
-    color: "#fff",
     fontWeight: "bold",
   },
   time: {
-    color: "#94a3b8",
     fontSize: 12,
   },
   thumbnail: {
@@ -135,7 +134,6 @@ const styles = StyleSheet.create({
     left: "45%",
   },
   caption: {
-    color: "#fff",
     marginTop: 8,
   },
 });

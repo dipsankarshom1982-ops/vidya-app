@@ -1,1128 +1,793 @@
 import { useTheme } from "@/context/ThemeContext";
-import { useNavigation } from "@react-navigation/native";
-import * as FileSystem from "expo-file-system/legacy";
+import { auth, db, storage } from "@/lib/firebase";
+import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
-import * as Location from "expo-location";
+import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useVideoPlayer, VideoView } from "expo-video";
 import * as VideoThumbnails from "expo-video-thumbnails";
+import {
+  addDoc,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  where,
+} from "firebase/firestore";
+import {
+  getDownloadURL,
+  ref,
+  uploadBytesResumable,
+  UploadTaskSnapshot,
+} from "firebase/storage";
 import { useEffect, useRef, useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    Animated,
-    Image,
-    ScrollView,
-    StyleSheet,
-    Switch,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Animated,
+  Image,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { auth, db, storage } from "@/lib/firebase";
-import {
-    addDoc,
-    collection,
-    doc,
-    getDoc,
-    getDocs,
-    query,
-    serverTimestamp,
-    where,
-} from "firebase/firestore";
-import { getDownloadURL, ref, uploadBytesResumable, UploadTaskSnapshot } from "firebase/storage";
+// ─── Types ───────────────────────────────────────────────────
+type PostStatus = "pending" | "in_review" | "approved" | "rejected";
 
-// 🔥 Check Post Limits
-const checkPostLimits = async (isSkillBattle: boolean) => {
-  const now = new Date();
+interface StudentData {
+  name: string;
+  class: string;
+  school: string;
+  profilePic: string;
+  location: {
+    city: string;
+    district: string;
+    state: string;
+    pincode: string;
+  };
+}
 
-  // 📅 28 days ago
-  const last28Days = new Date();
-  last28Days.setDate(now.getDate() - 28);
+interface MyPost {
+  id: string;
+  mediaUrl: string;
+  thumbnail: string;
+  status: PostStatus;
+  createdAt: any;
+  rejectionReason?: string;
+}
 
-  // 📅 Today start
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
+// ─── Status watermark config ──────────────────────────────────
+// Only pending/in_review/rejected show a watermark; approved = clean
+const WATERMARK_CONFIG: Partial<
+  Record<PostStatus, { label: string; emoji: string; color: string; bg: string }>
+> = {
+  pending: {
+    label: "PENDING REVIEW",
+    emoji: "⏳",
+    color: "#fff",
+    bg:    "rgba(243,156,18,0.82)",
+  },
+  in_review: {
+    label: "IN REVIEW",
+    emoji: "🔍",
+    color: "#fff",
+    bg:    "rgba(52,152,219,0.82)",
+  },
+  rejected: {
+    label: "REJECTED",
+    emoji: "❌",
+    color: "#fff",
+    bg:    "rgba(231,76,60,0.82)",
+  },
+};
 
-  // 🔥 SkillBattle check
-  if (isSkillBattle) {
-    const q = query(
-      collection(db, "posts"),
-      where("isSkillBattle", "==", true),
-      where("createdAt", ">", last28Days)
-    );
+// ─── Status badge config (for the tracker list) ───────────────
+const STATUS_CONFIG: Record<
+  PostStatus,
+  { label: string; emoji: string; color: string; bg: string; description: string }
+> = {
+  pending: {
+    label:       "Pending Review",
+    emoji:       "⏳",
+    color:       "#f39c12",
+    bg:          "#f39c1218",
+    description: "Waiting to be reviewed by our team.",
+  },
+  in_review: {
+    label:       "In Review",
+    emoji:       "🔍",
+    color:       "#3498db",
+    bg:          "#3498db18",
+    description: "Our team is currently reviewing your reel.",
+  },
+  approved: {
+    label:       "Approved ✓ Live",
+    emoji:       "✅",
+    color:       "#2ecc71",
+    bg:          "#2ecc7118",
+    description: "Your reel is live in the battle feed!",
+  },
+  rejected: {
+    label:       "Rejected",
+    emoji:       "❌",
+    color:       "#e74c3c",
+    bg:          "#e74c3c18",
+    description: "Your reel did not meet the guidelines.",
+  },
+};
 
-    const snap = await getDocs(q);
-    
-    // Filter by userId in code
-    const userPosts = snap.docs.filter(doc => doc.data().userId === auth.currentUser?.uid);
+// ─── Eligible classes ─────────────────────────────────────────
+const ELIGIBLE_CLASSES = ["5", "6", "7", "8", "9", "10", "11", "12"];
 
-    if (userPosts.length >= 4) {
-      Alert.alert("Limit Reached", "Max 4 SkillBattle posts in 28 days");
-      return false;
-    }
+// ─── Post limit (rejected don't count) ───────────────────────
+const checkPostLimit = async (
+  battleId: string,
+  uid: string
+): Promise<boolean> => {
+  const q = query(
+    collection(db, "posts"),
+    where("battleId", "==", battleId),
+    where("userId",   "==", uid),
+    where("status",   "not-in", ["rejected"])
+  );
+  const snap = await getDocs(q);
+  if (snap.size >= 4) {
+    Alert.alert("Limit Reached", "You can upload maximum 4 reels per battle.");
+    return false;
   }
-
-  // 🔥 Daily limit for Others posts
-  if (!isSkillBattle) {
-    const q = query(
-      collection(db, "posts"),
-      where("userId", "==", auth.currentUser?.uid),
-      where("isSkillBattle", "==", false),
-      where("createdAt", ">", todayStart)
-    );
-
-    const snap = await getDocs(q);
-
-    if (snap.size >= 3) {
-      Alert.alert("Limit Reached", "Only 3 posts allowed per day for Others");
-      return false;
-    }
-  }
-
   return true;
 };
 
-// 🎥 COMPRESS VIDEO
-const compressVideo = async (videoUri: string): Promise<string> => {
-  try {
-    // Get file info
-    const fileInfo = await FileSystem.getInfoAsync(videoUri);
+// ─── Status Watermark Overlay ─────────────────────────────────
+// Drop this component onto any thumbnail/video card in your feed
+export function PostStatusWatermark({ status }: { status: PostStatus }) {
+  const cfg = WATERMARK_CONFIG[status];
+  if (!cfg) return null; // approved — render nothing
 
-    // Check if file exists
-    if (!fileInfo.exists) {
-      console.log("❌ File not found");
-      return videoUri;
-    }
+  return (
+    <View style={wmStyles.wrapper} pointerEvents="none">
+      {/* Dark overlay so video is visually dimmed */}
+      <View style={wmStyles.dim} />
+      {/* Diagonal banner */}
+      <View style={[wmStyles.banner, { backgroundColor: cfg.bg }]}>
+        <Text style={wmStyles.bannerText}>
+          {cfg.emoji}  {cfg.label}
+        </Text>
+      </View>
+    </View>
+  );
+}
 
-    const fileSizeMB = (fileInfo.size || 0) / (1024 * 1024);
+const wmStyles = StyleSheet.create({
+  wrapper: {
+    ...StyleSheet.absoluteFillObject,
+    overflow: "hidden",
+    borderRadius: 14,
+  },
+  dim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.38)",
+  },
+  banner: {
+    position:        "absolute",
+    top:             18,
+    left:            -38,
+    width:           180,
+    paddingVertical: 5,
+    alignItems:      "center",
+    transform:       [{ rotate: "-35deg" }],
+  },
+  bannerText: {
+    color:      "#fff",
+    fontSize:   10,
+    fontWeight: "900",
+    letterSpacing: 0.8,
+  },
+});
 
-    console.log(`📹 Original video size: ${fileSizeMB.toFixed(2)} MB`);
-
-    // If already small, return original
-    if (fileSizeMB < 5) {
-      console.log("✅ Video size OK, no compression needed");
-      return videoUri;
-    }
-
-    // ⚠️ Video is too large
-    Alert.alert(
-      "⚠️ Large Video",
-      `Video is ${fileSizeMB.toFixed(2)}MB. Compression recommended but proceeding with upload.\n\nNote: Upload may take longer.`
-    );
-
-    return videoUri;
-  } catch (error) {
-    console.log("Compression error:", error);
-    // If compression fails, return original and proceed
-    return videoUri;
-  }
-};
-
-export default function CreatePost() {
+// ─── Component ────────────────────────────────────────────────
+export default function CreateReelScreen() {
   const { colors } = useTheme();
-  const navigation = useNavigation();
-  const router = useRouter();
-  const params = useLocalSearchParams();
+  const router     = useRouter();
+  const params     = useLocalSearchParams<{
+    battleId:    string;
+    battleTitle: string;
+    battleType:  string;
+    month:       string;
+  }>();
 
-  const isFromChallenge = !!params.challengeId;
+  const isSp   = params.battleType === "sponsored";
+  const accent = isSp ? "#ff9f43" : colors.accent;
 
-  const [step, setStep] = useState(1);
-  const [postType, setPostType] = useState("reel");
-  const [skillBattleChoice, setSkillBattleChoice] = useState<null | "yes" | "no">(null);
+  // ── State ──────────────────────────────────────────────────
+  const [student,        setStudent]        = useState<StudentData | null>(null);
+  const [videoAsset,     setVideoAsset]     = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const [thumbnail,      setThumbnail]      = useState<string | null>(null);
+  const [loading,        setLoading]        = useState<boolean>(false);
+  const [uploadProgress, setUploadProgress] = useState<number>(0);
+  const [notEligible,    setNotEligible]    = useState<boolean>(false);
+  const [myPosts,        setMyPosts]        = useState<MyPost[]>([]);
+  const [showMyPosts,    setShowMyPosts]    = useState<boolean>(true);
 
-  const [video, setVideo] = useState<any>(null);
-  const [image, setImage] = useState<any>(null);
-  const [thumbnail, setThumbnail] = useState<string | null>(null);
-
-  const [student, setStudent] = useState<any>(null);
-
-  const [title, setTitle] = useState((params.title as string) || "");
-  const [skillBattleTitle, setSkillBattleTitle] = useState((params.challengeName as string) || "");
-  const [description, setDescription] = useState((params.caption as string) || "");
-  const [category, setCategory] = useState((params.category as string) || "");
-  const [feeling, setFeeling] = useState("");
-  const [showLocation, setShowLocation] = useState(false);
-  const [location, setLocation] = useState("");
-  const [district, setDistrict] = useState("");
-  const [state, setState] = useState("");
-  const [locationFetching, setLocationFetching] = useState(false);
-  const [profilePicError, setProfilePicError] = useState(false);
-
-  const [accepted, setAccepted] = useState(false);
-  const [parentConsent, setParentConsent] = useState(false);
-
-  const [loading, setLoading] = useState(false);
-  const [compressing, setCompressing] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
   const progressAnim = useRef(new Animated.Value(0)).current;
 
-  const categories = [
-    "Dance",
-    "Singing",
-    "Coding",
-    "Art",
-    "Education",
-    "Sports",
-    "Motivation",
-    "Other",
-  ];
+  const player = useVideoPlayer(videoAsset?.uri ?? null, (p) => {
+    p.loop = true;
+    p.play();
+  });
 
-  const feelings = ["😊 Happy", "🔥 Energetic", "😎 Confident"];
-
-  // 🎯 Fetch student
+  // ── Fetch student profile ──────────────────────────────────
   useEffect(() => {
-    const fetchStudent = async () => {
-      if (!auth.currentUser) return;
-
-      try {
-        const snap = await getDoc(
-          doc(db, "students", auth.currentUser.uid)
-        );
-
-        if (snap.exists()) {
-          setStudent(snap.data());
-          setProfilePicError(false);
-        }
-      } catch (error) {
-        console.log("Error fetching student:", error);
-        setProfilePicError(true);
-      }
+    const loadStudent = async () => {
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+      const snap = await getDoc(doc(db, "students", uid));
+      if (!snap.exists()) return;
+      const d   = snap.data();
+      const cls = d.class !== undefined ? String(d.class) : "";
+      setStudent({
+        name:       d.name       ?? "",
+        class:      cls,
+        school:     d.school     ?? "",
+        profilePic: d.profilePic ?? "",
+        location: {
+          city:     d.location?.city     ?? "",
+          district: d.location?.district ?? "",
+          state:    d.location?.state    ?? "",
+          pincode:  d.location?.pincode  ?? "",
+        },
+      });
+      if (!ELIGIBLE_CLASSES.includes(cls)) setNotEligible(true);
     };
-
-    fetchStudent();
+    loadStudent();
   }, []);
 
-  // 📍 Auto-fetch district and state when location toggle is on
+  // ── Real-time listener: my posts in this battle ────────────
   useEffect(() => {
-    if (showLocation && !district && !state) {
-      fetchLocationData();
-    }
-  }, [showLocation]);
+    const uid = auth.currentUser?.uid;
+    if (!uid || !params.battleId) return;
 
-  useEffect(() => {
-    if (!isFromChallenge) {
-      return;
-    }
+    const q = query(
+      collection(db, "posts"),
+      where("battleId", "==", params.battleId),
+      where("userId",   "==", uid)
+    );
 
-    if (!skillBattleTitle && params.challengeName) {
-      setSkillBattleTitle(params.challengeName as string);
-    }
-
-    if (!description && params.caption) {
-      setDescription(params.caption as string);
-    }
-
-    if (!category && params.category) {
-      setCategory(params.category as string);
-    }
-  }, [category, description, isFromChallenge, params.caption, params.category, params.challengeName, skillBattleTitle]);
-
-  // 📍 Fetch district and state from coordinates
-  const fetchLocationData = async () => {
-    try {
-      setLocationFetching(true);
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      
-      if (status !== "granted") {
-        Alert.alert("Permission Denied", "Location permission is required");
-        setLocationFetching(false);
-        return;
-      }
-
-      const userLocation = await Location.getCurrentPositionAsync({});
-      const { latitude, longitude } = userLocation.coords;
-
-      // Reverse geocode to get address
-      const reverseGeocode = await Location.reverseGeocodeAsync({
-        latitude,
-        longitude,
-      });
-
-      if (reverseGeocode.length > 0) {
-        const address = reverseGeocode[0];
-        const districtName = address.district || address.city || "";
-        const stateName = address.region || "";
-        
-        setLocation(`${districtName}, ${stateName}`);
-        setDistrict(districtName);
-        setState(stateName);
-      }
-    } catch (error) {
-      console.log("Location error:", error);
-      Alert.alert("Location Error", "Could not fetch your location");
-    } finally {
-      setLocationFetching(false);
-    }
-  };
-
-  // 🎥 Thumbnail
-  const generateThumbnail = async (uri: string) => {
-    const { uri: thumb } = await VideoThumbnails.getThumbnailAsync(uri, {
-      time: 1000,
+    const unsub = onSnapshot(q, (snap) => {
+      const posts: MyPost[] = snap.docs.map((d) => ({
+        id:              d.id,
+        mediaUrl:        d.data().mediaUrl        ?? "",
+        thumbnail:       d.data().thumbnail       ?? "",
+        status:          (d.data().status as PostStatus) ?? "pending",
+        createdAt:       d.data().createdAt,
+        rejectionReason: d.data().rejectionReason ?? "",
+      }));
+      posts.sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0));
+      setMyPosts(posts);
     });
-    setThumbnail(thumb);
-  };
 
-  // 📁 Pick Media
-  const pickMedia = async () => {
+    return () => unsub();
+  }, [params.battleId]);
+
+  // ── Pick video ─────────────────────────────────────────────
+  const pickVideo = async (): Promise<void> => {
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes:
-        postType === "reel" || postType === "video"
-          ? ["videos"]
-          : ["images"],
-      quality: 0.6,
+      mediaTypes: ["videos"] as ImagePicker.MediaType[],
+      quality:    0.7,
     });
-
-    if (!result.canceled) {
+    if (!result.canceled && result.assets.length > 0) {
       const file = result.assets[0];
-
-      if (postType === "reel" || postType === "video") {
-        setVideo(file);
-        generateThumbnail(file.uri);
-      } else {
-        setImage(file);
-      }
+      setVideoAsset(file);
+      setThumbnail(null);
+      try {
+        const { uri: thumb } = await VideoThumbnails.getThumbnailAsync(file.uri, { time: 1000 });
+        setThumbnail(thumb);
+      } catch (_) {}
     }
   };
 
-  const player = useVideoPlayer(video?.uri || null);
+  // ── Upload reel ────────────────────────────────────────────
+  const uploadReel = async (): Promise<void> => {
+    const uid = auth.currentUser?.uid;
+    if (!uid)             { Alert.alert("Please login first.");                                               return; }
+    if (!student)         { Alert.alert("Profile not found.");                                                return; }
+    if (!videoAsset)      { Alert.alert("Please select a video.");                                            return; }
+    if (notEligible)      { Alert.alert("Not eligible", "Only Class 5–12 students can upload skill reels."); return; }
+    if (!params.battleId) { Alert.alert("No battle selected.");                                               return; }
 
-  const isSkillBattlePost = isFromChallenge || (postType === "reel" && skillBattleChoice === "yes");
-
-  // 🚀 Upload
-  const uploadPost = async () => {
-    if (!auth.currentUser) {
-      Alert.alert("Login required");
-      return;
-    }
-
-    const age = student?.age || 0;
-
-    if (isSkillBattlePost) {
-      if (age < 13) {
-        Alert.alert("You must be 13+ to post");
-        return;
-      }
-      if (!accepted || !parentConsent) {
-        Alert.alert("Accept terms & consent");
-        return;
-      }
-      if (!skillBattleTitle || !description || !category || !feeling) {
-        Alert.alert("All fields required for Skill Battle");
-        return;
-      }
-    }
-
-    if (!description.trim()) {
-      Alert.alert("Add caption/description");
-      return;
-    }
-
-    if ((postType === "reel" || postType === "video") && !video) {
-      Alert.alert("Select video");
-      return;
-    }
-
-    if (postType === "photo" && !image) {
-      Alert.alert("Select image");
-      return;
-    }
-
-    const finalTitle = isSkillBattlePost
-      ? skillBattleTitle
-      : postType === "reel" && skillBattleChoice === "no"
-        ? "Learning Reels"
-        : title;
-
-    let allowed = false;
-    try {
-      allowed = await checkPostLimits(isSkillBattlePost);
-    } catch (error: any) {
-      console.log("Post limit check failed:", error);
-      Alert.alert(
-        "Permission error",
-        error?.code
-          ? `${error.code}: ${error.message}`
-          : "Unable to verify posting limits. Please try again."
-      );
-      return;
-    }
-
+    const allowed = await checkPostLimit(params.battleId, uid);
     if (!allowed) return;
 
     setLoading(true);
     setUploadProgress(0);
-    Animated.timing(progressAnim, {
-      toValue: 0,
-      duration: 0,
-      useNativeDriver: false,
-    }).start();
+    progressAnim.setValue(0);
 
     try {
-      let mediaUrl = "";
+      const response = await globalThis.fetch(videoAsset.uri);
+      const blob     = await response.blob();
 
-      // 🎥 Upload Video - For both reel and video types
-      if (postType === "reel" || postType === "video") {
-        setCompressing(true);
-        
-        // 🎬 Compress video first
-        const compressedVideoUri = await compressVideo(video.uri);
-        
-        setCompressing(false);
+      // Path matches Storage rules: reels/{uid}/{fileName}
+      const fileRef    = ref(storage, `reels/${uid}/${Date.now()}.mp4`);
+      const uploadTask = uploadBytesResumable(fileRef, blob, {
+        contentType: videoAsset.mimeType ?? "video/mp4",
+      });
 
-        const res = await fetch(compressedVideoUri);
-        const blob = await res.blob();
-
-        const fileRef = ref(
-          storage,
-          `videos/${auth.currentUser.uid}_${Date.now()}.mp4`
+      const mediaUrl: string = await new Promise<string>((resolve, reject) => {
+        uploadTask.on(
+          "state_changed",
+          (snapshot: UploadTaskSnapshot) => {
+            const pct = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+            setUploadProgress(pct);
+            Animated.timing(progressAnim, {
+              toValue: pct, duration: 300, useNativeDriver: false,
+            }).start();
+          },
+          (error) => {
+            reject(
+              error.code === "storage/unauthorized"
+                ? new Error("Upload permission denied. Please contact support.")
+                : error
+            );
+          },
+          async () => resolve(await getDownloadURL(uploadTask.snapshot.ref))
         );
+      });
 
-        const uploadTask = uploadBytesResumable(fileRef, blob, {
-          contentType: video?.mimeType || "video/mp4",
-        });
-        
-        await new Promise<void>((resolve, reject) => {
-          uploadTask.on(
-            "state_changed",
-            (snapshot: UploadTaskSnapshot) => {
-              const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-              setUploadProgress(progress);
-              Animated.timing(progressAnim, {
-                toValue: progress,
-                duration: 300,
-                useNativeDriver: false,
-              }).start();
-            },
-            (error) => reject(error),
-            () => {
-              resolve();
-              return () => {};
-            }
-          );
-        });
-        
-        mediaUrl = await getDownloadURL(fileRef);
-      }
-
-      // 📸 Upload Image
-      if (postType === "photo") {
-        const res = await fetch(image.uri);
-        const blob = await res.blob();
-
-        const fileRef = ref(
-          storage,
-          `images/${auth.currentUser.uid}_${Date.now()}.jpg`
-        );
-
-        const uploadTask = uploadBytesResumable(fileRef, blob, {
-          contentType: image?.mimeType || "image/jpeg",
-        });
-        
-        await new Promise<void>((resolve, reject) => {
-          uploadTask.on(
-            "state_changed",
-            (snapshot: UploadTaskSnapshot) => {
-              const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-              setUploadProgress(progress);
-              Animated.timing(progressAnim, {
-                toValue: progress,
-                duration: 300,
-                useNativeDriver: false,
-              }).start();
-            },
-            (error) => reject(error),
-            () => {
-              resolve();
-              return () => {};
-            }
-          );
-        });
-        
-        mediaUrl = await getDownloadURL(fileRef);
-      }
-
+      // Save with status: "pending" — admin will change to in_review → approved/rejected
       await addDoc(collection(db, "posts"), {
-        userId: auth.currentUser.uid,
-        name: student?.name || "",
-        school: student?.school || "",
-        class: student?.class || "",
-        profilePic: student?.profilePic || "",
-        postType,
-        title: finalTitle,
-        description,
-        ...(isSkillBattlePost && { category }),
-        ...(showLocation && { location, district, state }),
-        ...(isSkillBattlePost && { feeling }),
-        isSkillBattle: isSkillBattlePost,
-        ...(isSkillBattlePost && { month: new Date().toISOString().slice(0, 7) }),
-        challengeId: params.challengeId || null,
+        userId:     uid,
+        name:       student.name,
+        school:     student.school,
+        class:      student.class,
+        profilePic: student.profilePic,
+        battleId:      params.battleId,
+        battleTitle:   params.battleTitle,
+        battleType:    params.battleType,
+        isSkillBattle: true,
+        postType:      "reel",
+        month:         params.month,
+        location: {
+          city:     student.location.city,
+          district: student.location.district,
+          state:    student.location.state,
+          pincode:  student.location.pincode,
+          country:  "India",
+        },
         mediaUrl,
-        thumbnail: thumbnail || "",
-        likes: 0,
-        comments: 0,
-        views: 0,
+        thumbnail: thumbnail ?? "",
+        // ── Moderation fields ──────────────────────────────
+        status:          "pending",  // pending | in_review | approved | rejected
+        rejectionReason: "",         // filled by admin on reject
+        reviewedAt:      null,
+        reviewedBy:      "",
+        // Engagement
+        likes: 0, views: 0, shares: 0, comments: 0, watchTime: 0,
         createdAt: serverTimestamp(),
       });
 
-      Alert.alert("✅ Posted Successfully!");
+      setVideoAsset(null);
+      setThumbnail(null);
+      setShowMyPosts(true);
 
-      if (postType === "reel") {
-        router.replace("/reels");
-      } else {
-        router.replace("/(drawer)/(tabs)/home");
-      }
-    } catch (e: any) {
-      console.log("Upload failed details:", e);
       Alert.alert(
-        "Upload failed",
-        e?.code ? `${e.code}: ${e.message}` : e?.message || "Unknown error"
+        "🎉 Submitted!",
+        "Your reel is pending admin review.\n\nIt will show a watermark in the feed until approved.",
+        [{ text: "OK" }]
       );
+    } catch (e: unknown) {
+      Alert.alert("Upload Failed", e instanceof Error ? e.message : "Please try again.");
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   };
 
-  const canProceed =
-    (postType === "reel" && !!video) ||
-    (postType === "video" && !!video) ||
-    (postType === "photo" && !!image);
-
-  // ---- Shared render helpers ----
-  const renderLocationSection = () => (
-    <>
-      <View style={[styles.row, { marginTop: 15 }]}>
-        <Text style={[styles.label, { color: colors.text, flex: 1 }]}>📍 Add Location (Optional)</Text>
-        <Switch
-          value={showLocation}
-          onValueChange={setShowLocation}
-          trackColor={{ false: colors.border, true: `${colors.accent}40` }}
-          thumbColor={showLocation ? colors.accent : colors.textSecondary}
-        />
-      </View>
-      {showLocation && (
-        <>
-          {locationFetching && (
-            <View style={[styles.input, { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1, justifyContent: "center", alignItems: "center", minHeight: 50 }]}>
-              <ActivityIndicator color={colors.accent} />
-            </View>
-          )}
-          <TextInput
-            placeholder="Location (auto-fetched or enter manually)"
-            placeholderTextColor={colors.textSecondary}
-            value={location}
-            onChangeText={setLocation}
-            style={[styles.input, { backgroundColor: colors.card, color: colors.text, borderColor: colors.border, borderWidth: 1 }]}
-            editable={!locationFetching}
-          />
-          {district ? (
-            <View style={[styles.infoBox, { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 }]}>
-              <Text style={[styles.infoText, { color: colors.text }]}>📍 District: <Text style={{ fontWeight: "bold", color: colors.accent }}>{district}</Text></Text>
-              <Text style={[styles.infoText, { color: colors.text }]}>🗺️ State: <Text style={{ fontWeight: "bold", color: colors.accent }}>{state}</Text></Text>
-            </View>
-          ) : null}
-        </>
-      )}
-    </>
-  );
-
-  const renderCategoryAndFeelings = () => (
-    <>
-      <Text style={[styles.label, { color: colors.text }]}>🎭 Category</Text>
-      <View style={[styles.dropdown, { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 }]}>
-        {categories.map((c) => (
-          <TouchableOpacity key={c} onPress={() => setCategory(c)}>
-            <Text style={[styles.option, { color: colors.textSecondary }, category === c && { color: colors.accent, fontWeight: "bold" }]}>{c}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-      <Text style={[styles.label, { color: colors.text }]}>😊 How are you feeling?</Text>
-      <View style={styles.feelings}>
-        {feelings.map((f) => (
-          <TouchableOpacity
-            key={f}
-            style={[styles.feelingBtn, { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 }, feeling === f && { backgroundColor: colors.accent, borderColor: colors.accent }]}
-            onPress={() => setFeeling(f)}
-          >
-            <Text style={[styles.feelingText, { color: feeling === f ? "#fff" : colors.text }]}>{f}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-    </>
-  );
-
-  const renderTermsAndConsent = () => (
-    <>
-      <View style={[styles.row, { marginTop: 15 }]}>
-        <Text style={[styles.label, { color: colors.text, flex: 1 }]}>Accept Terms</Text>
-        <Switch
-          value={accepted}
-          onValueChange={setAccepted}
-          trackColor={{ false: colors.border, true: `${colors.accent}40` }}
-          thumbColor={accepted ? colors.accent : colors.textSecondary}
-        />
-      </View>
-      <View style={[styles.row, { marginTop: 15 }]}>
-        <Text style={[styles.label, { color: colors.text, flex: 1 }]}>Parent Consent</Text>
-        <Switch
-          value={parentConsent}
-          onValueChange={setParentConsent}
-          trackColor={{ false: colors.border, true: `${colors.accent}40` }}
-          thumbColor={parentConsent ? colors.accent : colors.textSecondary}
-        />
-      </View>
-    </>
-  );
-
-  const renderProgressAndPostBtn = () => (
-    <>
-      {loading && (
-        <View style={[styles.progressContainer, { backgroundColor: colors.card }]}>
-          <View style={styles.progressInfo}>
-            <Text style={[styles.progressLabel, { color: colors.text }]}>
-              {compressing ? "🎬 Compressing..." : `📤 Uploading... ${Math.round(uploadProgress)}%`}
-            </Text>
-          </View>
-          <Animated.View
-            style={[styles.progressBar, { backgroundColor: colors.accent, width: progressAnim.interpolate({ inputRange: [0, 100], outputRange: ["0%", "100%"] }) }]}
-          />
-        </View>
-      )}
-      <TouchableOpacity style={[styles.btn, loading && { opacity: 0.7 }]} onPress={uploadPost} disabled={loading}>
-        {loading ? (
-          <View>
-            <ActivityIndicator color="#fff" />
-            <Text style={{ color: "#fff", marginTop: 8, textAlign: "center", fontSize: 12 }}>
-              {compressing ? "🎬 Compressing..." : "📤 Uploading..."}
-            </Text>
-          </View>
-        ) : (
-          <Text style={{ color: "#fff" }}>Post 🚀</Text>
-        )}
-      </TouchableOpacity>
-    </>
-  );
-
-  // ================= STEP 1 =================
-  if (step === 1) {
+  // ── Not eligible screen ────────────────────────────────────
+  if (notEligible) {
     return (
       <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-        <View style={styles.header}>
-          <Text style={[styles.title, { color: colors.text }]}>Create Post</Text>
-          <TouchableOpacity disabled={!canProceed} onPress={() => setStep(2)}>
-            <Text style={[styles.next, { opacity: canProceed ? 1 : 0.3, color: colors.accent }]}>
-              Next →
-            </Text>
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+          <Ionicons name="arrow-back" size={22} color={colors.text} />
+        </TouchableOpacity>
+        <View style={styles.centered}>
+          <Text style={{ fontSize: 50 }}>🔒</Text>
+          <Text style={[styles.notEligibleTitle, { color: colors.text }]}>Not Eligible</Text>
+          <Text style={[styles.notEligibleText,  { color: colors.textSecondary }]}>
+            Skill Battle is only available for{"\n"}students in Class 5 to 12.
+            {"\n\n"}You are currently in Class {student?.class || "unknown"}.
+          </Text>
+          <TouchableOpacity
+            style={[styles.backToListBtn, { backgroundColor: colors.accent }]}
+            onPress={() => router.back()}
+          >
+            <Text style={styles.backToListBtnText}>← Back to Battles</Text>
           </TouchableOpacity>
         </View>
-
-        {/* 🎖️ CHALLENGE MODE BANNER */}
-        {isFromChallenge && (
-          <View style={[styles.challengeBanner, { borderLeftColor: colors.accent, backgroundColor: `${colors.accent}15` }]}>
-            <Text style={[styles.challengeTitle, { color: colors.accent }]}>🎖️ Challenge Mode</Text>
-            <Text style={[styles.challengeSubtitle, { color: colors.textSecondary }]}>
-              {params.challengeName || "Skill Challenge"}
-            </Text>
-          </View>
-        )}
-
-        {/* PROFILE */}
-        <View style={[styles.profileCard, { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1, padding: 12, borderRadius: 12 }]}>
-          {!profilePicError && student?.profilePic ? (
-            <Image
-              source={{ uri: student.profilePic }}
-              style={[styles.avatar, { borderColor: colors.accent, borderWidth: 2 }]}
-              onError={() => setProfilePicError(true)}
-            />
-          ) : (
-            <Image
-              source={{ uri: `https://i.pravatar.cc/150?u=${auth.currentUser?.uid || auth.currentUser?.email || "user"}&name=${student?.name || "Student"}` }}
-              style={[styles.avatar, { borderColor: colors.accent, borderWidth: 2 }]}
-            />
-          )}
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.name, { color: colors.text }]}>{student?.name || "Student"}</Text>
-            <Text style={[styles.sub, { color: colors.textSecondary }]}>
-              {student?.school || "School"} | Class {student?.class || "N/A"}
-            </Text>
-          </View>
-        </View>
-
-        {/* POST TYPE CHIPS - reel, photo, video only */}
-        <View style={styles.typeRow}>
-          {["reel", "photo", "video"].map((t) => (
-            <TouchableOpacity
-              key={t}
-              style={[
-                styles.typeBtn,
-                { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 },
-                postType === t && { backgroundColor: colors.accent, borderColor: colors.accent },
-              ]}
-              onPress={() => {
-                setPostType(t);
-                setSkillBattleChoice(null);
-                setVideo(null);
-                setImage(null);
-                setThumbnail(null);
-              }}
-            >
-              <Text style={{ color: postType === t ? "#fff" : colors.text }}>
-                {t === "reel" ? "🎬 Reel" : t === "photo" ? "📸 Photo" : "🎥 Video"}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        {/* UPLOAD BOX */}
-        <TouchableOpacity
-          style={[styles.uploadBox, { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 }]}
-          onPress={pickMedia}
-        >
-          {video ? (
-            <VideoView player={player} style={{ width: "100%", height: 200 }} />
-          ) : image ? (
-            <Image source={{ uri: image.uri }} style={{ width: "100%", height: 200, resizeMode: "cover" }} />
-          ) : (
-            <View style={{ alignItems: "center", gap: 8 }}>
-              <Text style={{ color: colors.textSecondary, fontSize: 36 }}>
-                {postType === "photo" ? "📸" : "🎬"}
-              </Text>
-              <Text style={{ color: colors.textSecondary }}>
-                Tap to upload {postType === "photo" ? "a photo" : "a video"}
-              </Text>
-            </View>
-          )}
-        </TouchableOpacity>
       </SafeAreaView>
     );
   }
 
-  // ================= STEP 2 =================
+  // ── Main UI ────────────────────────────────────────────────
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-      <ScrollView>
-        <TouchableOpacity onPress={() => { setStep(1); setSkillBattleChoice(null); }}>
-          <Text style={[styles.back, { color: colors.accent }]}>← Back</Text>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 40 }}
+      >
+        {/* Back */}
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+          <Ionicons name="arrow-back" size={22} color={colors.text} />
+          <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
         </TouchableOpacity>
 
-        {/* CHALLENGE BANNER */}
-        {isFromChallenge && (
-          <View style={[styles.challengeBanner, { borderLeftColor: colors.accent, backgroundColor: `${colors.accent}15` }]}>
-            <Text style={[styles.challengeTitle, { color: colors.accent }]}>🎖️ Challenge Mode</Text>
-            <Text style={[styles.challengeSubtitle, { color: colors.textSecondary }]}>
-              {params.challengeName || "Skill Challenge"}
+        {/* Battle banner */}
+        <LinearGradient
+          colors={isSp ? ["#2a1500", "#1a0e00"] : ["#170d40", "#0d1a4a"]}
+          style={styles.battleBanner}
+          start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+        >
+          <View style={[styles.battleTypePill, { backgroundColor: isSp ? "#ff9f43" : accent }]}>
+            <Text style={styles.battleTypePillText}>
+              {isSp ? "🏅 Sponsored Battle" : "🎓 Free Battle"}
             </Text>
+          </View>
+          <Text style={styles.battleBannerTitle}>{params.battleTitle}</Text>
+          <Text style={styles.battleBannerMonth}>📅 {params.month}</Text>
+        </LinearGradient>
+
+        {/* Student info card */}
+        {student && (
+          <View style={[styles.studentCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            {student.profilePic ? (
+              <Image source={{ uri: student.profilePic }} style={styles.studentAvatar} />
+            ) : (
+              <View style={[styles.studentAvatarPlaceholder, { backgroundColor: `${accent}20` }]}>
+                <Text style={[styles.studentAvatarInitial, { color: accent }]}>
+                  {student.name.charAt(0).toUpperCase()}
+                </Text>
+              </View>
+            )}
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.studentName, { color: colors.text }]}>{student.name}</Text>
+              <Text style={[styles.studentMeta, { color: colors.textSecondary }]}>
+                {student.school} · Class {student.class}
+              </Text>
+              <Text style={[styles.studentMeta, { color: colors.textSecondary }]}>
+                📍 {student.location.district}, {student.location.state}
+              </Text>
+            </View>
+            <View style={[styles.eligibleBadge, { backgroundColor: `${accent}18`, borderColor: `${accent}35` }]}>
+              <Text style={[styles.eligibleBadgeText, { color: accent }]}>✅ Eligible</Text>
+            </View>
           </View>
         )}
 
-        {/* ===== REEL: Skill Battle prompt ===== */}
-        {postType === "reel" && !isFromChallenge && skillBattleChoice === null && (
-          <View style={[styles.promptBox, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <Text style={[styles.promptTitle, { color: colors.text }]}>
-              🎯 Do you want to participate in Skill Battle contest?
-            </Text>
-            <Text style={[styles.promptSub, { color: colors.textSecondary }]}>
-              Skill Battle entries compete monthly for prizes.{"\n"}Learning Reels are shared with the community.
-            </Text>
+        {/* ── My Submissions tracker ───────────────────────── */}
+        {myPosts.length > 0 && (
+          <View style={[styles.section, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <TouchableOpacity
-              style={[styles.promptBtnYes, { backgroundColor: colors.accent }]}
-              onPress={() => setSkillBattleChoice("yes")}
+              style={styles.sectionHeader}
+              onPress={() => setShowMyPosts((v) => !v)}
             >
-              <Text style={styles.promptBtnText}>🔥 Yes, Join Skill Battle</Text>
+              <View style={styles.sectionHeaderLeft}>
+                <Text style={[styles.sectionTitle, { color: colors.text }]}>
+                  📋 My Submissions
+                </Text>
+                <View style={[styles.countBadge, { backgroundColor: `${accent}20` }]}>
+                  <Text style={[styles.countBadgeText, { color: accent }]}>
+                    {myPosts.length}/4
+                  </Text>
+                </View>
+              </View>
+              <Ionicons
+                name={showMyPosts ? "chevron-up" : "chevron-down"}
+                size={18}
+                color={colors.textSecondary}
+              />
             </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.promptBtnNo, { borderColor: colors.border, borderWidth: 1 }]}
-              onPress={() => setSkillBattleChoice("no")}
-            >
-              <Text style={[styles.promptBtnText, { color: colors.text }]}>📚 No, Post as Learning Reel</Text>
-            </TouchableOpacity>
+
+            {showMyPosts && (
+              <View style={styles.postsList}>
+                {myPosts.map((post, index) => {
+                  const cfg = STATUS_CONFIG[post.status] ?? STATUS_CONFIG.pending;
+                  return (
+                    <View
+                      key={post.id}
+                      style={[
+                        styles.postRow,
+                        index > 0 && { borderTopWidth: 1, borderTopColor: colors.border },
+                      ]}
+                    >
+                      {/* Thumbnail with watermark overlay */}
+                      <View style={styles.postThumbWrap}>
+                        {post.thumbnail ? (
+                          <Image source={{ uri: post.thumbnail }} style={styles.postThumb} />
+                        ) : (
+                          <View style={[styles.postThumbEmpty, { backgroundColor: `${accent}15` }]}>
+                            <Text style={{ fontSize: 20 }}>🎬</Text>
+                          </View>
+                        )}
+                        {/* Watermark — only visible for non-approved */}
+                        <PostStatusWatermark status={post.status} />
+                      </View>
+
+                      {/* Info */}
+                      <View style={{ flex: 1, gap: 5 }}>
+                        <Text style={[styles.postLabel, { color: colors.text }]}>
+                          Reel #{index + 1}
+                        </Text>
+                        <View style={[styles.statusBadge, { backgroundColor: cfg.bg }]}>
+                          <Text style={[styles.statusText, { color: cfg.color }]}>
+                            {cfg.emoji}  {cfg.label}
+                          </Text>
+                        </View>
+                        <Text style={[styles.statusDesc, { color: colors.textSecondary }]}>
+                          {cfg.description}
+                        </Text>
+                        {post.status === "rejected" && post.rejectionReason ? (
+                          <View style={styles.rejectionBox}>
+                            <Text style={styles.rejectionLabel}>Admin note:</Text>
+                            <Text style={styles.rejectionText}>{post.rejectionReason}</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
           </View>
         )}
 
-        {/* ===== SKILL BATTLE FORM (reel+yes OR from challenge) ===== */}
-        {(skillBattleChoice === "yes" || isFromChallenge) && (
-          <>
-            <Text style={[styles.label, { color: colors.text }]}>🎖️ Select Title</Text>
-            <View style={[styles.dropdown, { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 }]}>
-              {Array.from(new Set([
-                (params.challengeName as string) || "",
-                "Shikshakool Skill Battle",
-                "Amul Skill Battle",
-                "Others Battle",
-                "Monthly Challenge",
-              ].filter(Boolean))).map((t) => (
-                <TouchableOpacity key={t} onPress={() => setSkillBattleTitle(t)}>
-                  <Text style={[styles.option, { color: colors.textSecondary }, skillBattleTitle === t && { color: colors.accent, fontWeight: "bold" }]}>
-                    {t}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+        {/* Info box */}
+        <View style={[styles.infoBox, { backgroundColor: `${accent}10`, borderColor: `${accent}30` }]}>
+          <Ionicons name="information-circle-outline" size={16} color={accent} />
+          <Text style={[styles.infoBoxText, { color: accent }]}>
+            Battle title and description are set by admin. Just upload your best skill reel!
+          </Text>
+        </View>
 
-            <Text style={[styles.label, { color: colors.text }]}>📝 Select Caption</Text>
-            <View style={[styles.dropdown, { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 }]}>
-              {["Skill Battle", "My Talent My Pride", "Watch My Skill"].map((c) => (
-                <TouchableOpacity key={c} onPress={() => setDescription(c)}>
-                  <Text style={[styles.option, { color: colors.textSecondary }, description === c && { color: colors.accent, fontWeight: "bold" }]}>
-                    {c}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+        {/* Video picker */}
+        <TouchableOpacity
+          style={[
+            styles.videoPicker,
+            { backgroundColor: colors.card, borderColor: videoAsset ? accent : colors.border },
+            videoAsset && { borderWidth: 2 },
+          ]}
+          onPress={pickVideo}
+          activeOpacity={0.85}
+        >
+          {videoAsset ? (
+            <>
+              <VideoView player={player} style={styles.videoPreview} nativeControls={false} />
+              <View style={styles.videoOverlay}>
+                <View style={styles.changeVideoBtn}>
+                  <Ionicons name="camera" size={16} color="#fff" />
+                  <Text style={styles.changeVideoText}>Change Video</Text>
+                </View>
+              </View>
+              {thumbnail && (
+                <Image source={{ uri: thumbnail }} style={styles.thumbnailPreview} />
+              )}
+            </>
+          ) : (
+            <View style={styles.videoPickerEmpty}>
+              <LinearGradient
+                colors={[`${accent}20`, `${accent}08`]}
+                style={styles.videoPickerGradient}
+              >
+                <Text style={{ fontSize: 48 }}>🎬</Text>
+                <Text style={[styles.videoPickerTitle, { color: colors.text }]}>
+                  Upload Your Skill Reel
+                </Text>
+                <Text style={[styles.videoPickerSub, { color: colors.textSecondary }]}>
+                  Tap to select a video from gallery
+                </Text>
+                <View style={[styles.videoPickerBtn, { backgroundColor: accent }]}>
+                  <Ionicons name="cloud-upload-outline" size={16} color="#fff" />
+                  <Text style={styles.videoPickerBtnText}>Choose Video</Text>
+                </View>
+              </LinearGradient>
             </View>
+          )}
+        </TouchableOpacity>
 
-            {renderLocationSection()}
-            {renderCategoryAndFeelings()}
-            {renderTermsAndConsent()}
-            {renderProgressAndPostBtn()}
-          </>
+        {/* Rules */}
+        <View style={[styles.rulesBox, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <Text style={[styles.rulesTitle, { color: colors.text }]}>📋 Rules</Text>
+          {[
+            "Video must be your original skill content",
+            "Max 4 reels per battle",
+            "Only Class 5–12 students can participate",
+            "No inappropriate content",
+            "Location is auto-detected from your profile",
+            "All reels go through admin review before approval",
+          ].map((rule, i) => (
+            <View key={i} style={styles.ruleRow}>
+              <Text style={[styles.ruleDot, { color: accent }]}>•</Text>
+              <Text style={[styles.ruleText, { color: colors.textSecondary }]}>{rule}</Text>
+            </View>
+          ))}
+        </View>
+
+        {/* Upload progress */}
+        {loading && (
+          <View style={[styles.progressBox, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.progressLabel, { color: colors.text }]}>
+              📤 Uploading... {Math.round(uploadProgress)}%
+            </Text>
+            <View style={[styles.progressBg, { backgroundColor: "rgba(255,255,255,0.07)" }]}>
+              <Animated.View
+                style={[
+                  styles.progressFill,
+                  {
+                    backgroundColor: accent,
+                    width: progressAnim.interpolate({
+                      inputRange: [0, 100], outputRange: ["0%", "100%"],
+                    }),
+                  },
+                ]}
+              />
+            </View>
+          </View>
         )}
 
-        {/* ===== LEARNING REEL FORM (reel+no) ===== */}
-        {postType === "reel" && !isFromChallenge && skillBattleChoice === "no" && (
-          <>
-            <View style={[styles.infoBox, { backgroundColor: `${colors.accent}15`, borderColor: colors.accent, borderWidth: 1 }]}>
-              <Text style={[styles.infoText, { color: colors.accent }]}>📚 Title: Learning Reels</Text>
-            </View>
-
-            <TextInput
-              placeholder="Write a caption..."
-              placeholderTextColor={colors.textSecondary}
-              value={description}
-              onChangeText={setDescription}
-              style={[styles.input, { backgroundColor: colors.card, color: colors.text, borderColor: colors.border, borderWidth: 1 }]}
-              multiline
-            />
-
-            {renderLocationSection()}
-            {renderCategoryAndFeelings()}
-            {renderTermsAndConsent()}
-            {renderProgressAndPostBtn()}
-          </>
-        )}
-
-        {/* ===== PHOTO / VIDEO FORM ===== */}
-        {(postType === "photo" || postType === "video") && !isFromChallenge && (
-          <>
-            <TextInput
-              placeholder="Title"
-              placeholderTextColor={colors.textSecondary}
-              value={title}
-              onChangeText={setTitle}
-              style={[styles.input, { backgroundColor: colors.card, color: colors.text, borderColor: colors.border, borderWidth: 1 }]}
-            />
-            <TextInput
-              placeholder="Description"
-              placeholderTextColor={colors.textSecondary}
-              value={description}
-              onChangeText={setDescription}
-              style={[styles.input, { backgroundColor: colors.card, color: colors.text, borderColor: colors.border, borderWidth: 1 }]}
-              multiline
-            />
-            {renderProgressAndPostBtn()}
-          </>
-        )}
-
+        {/* Submit */}
+        <TouchableOpacity
+          style={[
+            styles.submitBtn,
+            { backgroundColor: accent, opacity: !videoAsset || loading ? 0.6 : 1 },
+          ]}
+          onPress={uploadReel}
+          disabled={!videoAsset || loading}
+        >
+          {loading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <>
+              <Ionicons name="rocket" size={18} color="#fff" />
+              <Text style={styles.submitBtnText}>Submit to Battle 🚀</Text>
+            </>
+          )}
+        </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-// ================= STYLES =================
-
+// ─── Styles ───────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#0f172a",
-    padding: 16,
-  },
+  container: { flex: 1 },
+  centered:  { flex: 1, justifyContent: "center", alignItems: "center", padding: 30, gap: 16 },
 
-  header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-  },
+  backBtn:  { flexDirection: "row", alignItems: "center", gap: 8, padding: 16 },
+  backText: { fontSize: 15, fontWeight: "600" },
 
-  title: {
-    color: "#fff",
-    fontSize: 22,
-    fontWeight: "bold",
-  },
+  notEligibleTitle:  { fontSize: 22, fontWeight: "900", textAlign: "center" },
+  notEligibleText:   { fontSize: 14, fontWeight: "500", textAlign: "center", lineHeight: 22 },
+  backToListBtn:     { paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12, marginTop: 8 },
+  backToListBtnText: { color: "#fff", fontSize: 14, fontWeight: "700" },
 
-  next: {
-    color: "#38bdf8",
-    fontWeight: "bold",
+  battleBanner: {
+    marginHorizontal: 16, marginBottom: 14,
+    borderRadius: 18, padding: 16, gap: 6,
   },
+  battleTypePill: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: 20, marginBottom: 4,
+  },
+  battleTypePillText: { color: "#fff", fontSize: 11, fontWeight: "800" },
+  battleBannerTitle:  { color: "#fff", fontSize: 18, fontWeight: "900", lineHeight: 24 },
+  battleBannerMonth:  { color: "rgba(255,255,255,0.6)", fontSize: 12, fontWeight: "600" },
 
-  back: {
-    color: "#38bdf8",
-    marginBottom: 10,
+  studentCard: {
+    flexDirection: "row", alignItems: "center", gap: 12,
+    marginHorizontal: 16, marginBottom: 12,
+    padding: 12, borderRadius: 14, borderWidth: 1,
   },
+  studentAvatar:            { width: 46, height: 46, borderRadius: 23 },
+  studentAvatarPlaceholder: { width: 46, height: 46, borderRadius: 23, justifyContent: "center", alignItems: "center" },
+  studentAvatarInitial:     { fontSize: 18, fontWeight: "900" },
+  studentName:  { fontSize: 14, fontWeight: "800" },
+  studentMeta:  { fontSize: 11, fontWeight: "500", marginTop: 1 },
+  eligibleBadge:     { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 1 },
+  eligibleBadgeText: { fontSize: 10, fontWeight: "800" },
 
-  profileCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginVertical: 15,
-    gap: 12,
+  section: {
+    marginHorizontal: 16, marginBottom: 14,
+    borderRadius: 14, borderWidth: 1, overflow: "hidden",
   },
+  sectionHeader: {
+    flexDirection: "row", alignItems: "center",
+    justifyContent: "space-between", padding: 14,
+  },
+  sectionHeaderLeft: { flexDirection: "row", alignItems: "center", gap: 8 },
+  sectionTitle:      { fontSize: 13, fontWeight: "800" },
+  countBadge:        { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 20 },
+  countBadgeText:    { fontSize: 11, fontWeight: "800" },
 
-  avatar: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    marginRight: 10,
-  },
+  postsList: { paddingHorizontal: 14, paddingBottom: 14 },
+  postRow:   { flexDirection: "row", gap: 12, alignItems: "flex-start", paddingVertical: 12 },
 
-  name: {
-    color: "#fff",
-    fontWeight: "bold",
-  },
+  postThumbWrap:  { position: "relative", width: 56, height: 80, borderRadius: 14, overflow: "hidden" },
+  postThumb:      { width: 56, height: 80, borderRadius: 0 },
+  postThumbEmpty: { width: 56, height: 80, justifyContent: "center", alignItems: "center" },
 
-  sub: {
-    color: "#aaa",
-  },
+  postLabel:   { fontSize: 12, fontWeight: "700" },
+  statusBadge: { alignSelf: "flex-start", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  statusText:  { fontSize: 11, fontWeight: "800" },
+  statusDesc:  { fontSize: 11, fontWeight: "500", lineHeight: 16 },
 
-  typeRow: {
-    flexDirection: "row",
-    justifyContent: "space-around",
-    marginBottom: 10,
+  rejectionBox: {
+    marginTop: 4, padding: 8,
+    backgroundColor: "#e74c3c15",
+    borderRadius: 8, borderLeftWidth: 3, borderLeftColor: "#e74c3c",
   },
-
-  typeBtn: {
-    padding: 10,
-    backgroundColor: "#1e293b",
-    borderRadius: 10,
-  },
-
-  activeType: {
-    backgroundColor: "#38bdf8",
-  },
-
-  uploadBox: {
-    height: 200,
-    borderRadius: 15,
-    backgroundColor: "#1e293b",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  input: {
-    backgroundColor: "#1e293b",
-    color: "#fff",
-    padding: 12,
-    borderRadius: 10,
-    marginTop: 10,
-  },
-
-  categoryWrap: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    marginTop: 10,
-  },
-
-  catBtn: {
-    backgroundColor: "#1e293b",
-    padding: 8,
-    margin: 5,
-    borderRadius: 10,
-  },
-
-  activeCat: {
-    backgroundColor: "#38bdf8",
-  },
-
-  row: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginTop: 15,
-  },
-
-  btn: {
-    backgroundColor: "#6366f1",
-    padding: 15,
-    borderRadius: 15,
-    alignItems: "center",
-    marginTop: 20,
-  },
-
-  challengeBanner: {
-    backgroundColor: "rgba(255, 215, 0, 0.1)",
-    borderLeftWidth: 4,
-    borderLeftColor: "#FFD700",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 10,
-    marginBottom: 15,
-    borderWidth: 1,
-    borderColor: "rgba(255, 215, 0, 0.3)",
-  },
-
-  challengeTitle: {
-    color: "#FFD700",
-    fontSize: 14,
-    fontWeight: "700",
-    marginBottom: 4,
-  },
-
-  challengeSubtitle: {
-    color: "#FFF",
-    fontSize: 13,
-    fontWeight: "600",
-  },
-
-  label: {
-    color: "#c7d2fe",
-    fontSize: 13,
-    fontWeight: "600",
-    marginTop: 15,
-    marginBottom: 8,
-  },
-
-  feelings: {
-    flexDirection: "row",
-    justifyContent: "space-around",
-    marginBottom: 15,
-  },
-
-  feelingBtn: {
-    backgroundColor: "#1e293b",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#334155",
-  },
-
-  activeFeelingBtn: {
-    backgroundColor: "#0ea5e9",
-    borderColor: "#0ea5e9",
-  },
-
-  feelingText: {
-    color: "#fff",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-
-  modeRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 15,
-  },
-
-  modeBtn: {
-    padding: 12,
-    backgroundColor: "#1e293b",
-    borderRadius: 12,
-    width: "48%",
-    alignItems: "center",
-  },
-
-  activeMode: {
-    backgroundColor: "#38bdf8",
-  },
-
-  modeText: {
-    color: "#fff",
-  },
-
-  lockedText: {
-    color: "#38bdf8",
-    fontSize: 16,
-    marginBottom: 10,
-  },
-
-  dropdown: {
-    backgroundColor: "#1e293b",
-    borderRadius: 10,
-    padding: 10,
-    marginTop: 10,
-  },
-
-  option: {
-    color: "#fff",
-    paddingVertical: 6,
-  },
-
-  progressContainer: {
-    marginTop: 15,
-    borderRadius: 12,
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: "#334155",
-  },
-
-  progressInfo: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-
-  progressLabel: {
-    fontSize: 12,
-    fontWeight: "600",
-  },
-
-  progressBar: {
-    height: 6,
-    backgroundColor: "#38bdf8",
-    borderRadius: 3,
-  },
+  rejectionLabel: { color: "#e74c3c", fontSize: 10, fontWeight: "800" },
+  rejectionText:  { color: "#e74c3c", fontSize: 11, fontWeight: "500", marginTop: 2 },
 
   infoBox: {
-    backgroundColor: "#1e293b",
-    borderColor: "#334155",
-    borderWidth: 1,
-    borderRadius: 10,
-    padding: 12,
-    marginTop: 10,
+    flexDirection: "row", alignItems: "flex-start", gap: 8,
+    marginHorizontal: 16, marginBottom: 14,
+    padding: 12, borderRadius: 12, borderWidth: 1,
   },
+  infoBoxText: { fontSize: 12, fontWeight: "600", flex: 1, lineHeight: 18 },
 
-  infoText: {
-    color: "#c7d2fe",
-    fontSize: 13,
-    fontWeight: "600",
-    marginVertical: 4,
+  videoPicker: {
+    marginHorizontal: 16, marginBottom: 14,
+    borderRadius: 18, borderWidth: 1.5,
+    overflow: "hidden", minHeight: 220,
   },
+  videoPreview:   { width: "100%", height: 220 },
+  videoOverlay:   { ...StyleSheet.absoluteFillObject, justifyContent: "flex-end", padding: 12 },
+  changeVideoBtn: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    alignSelf: "flex-end",
+    backgroundColor: "rgba(0,0,0,0.6)",
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 20,
+  },
+  changeVideoText:   { color: "#fff", fontSize: 12, fontWeight: "700" },
+  thumbnailPreview:  {
+    position: "absolute", bottom: 12, left: 12,
+    width: 48, height: 72, borderRadius: 8,
+    borderWidth: 2, borderColor: "#fff",
+  },
+  videoPickerEmpty:    { flex: 1 },
+  videoPickerGradient: {
+    flex: 1, minHeight: 220,
+    justifyContent: "center", alignItems: "center",
+    gap: 10, padding: 24,
+  },
+  videoPickerTitle:   { fontSize: 16, fontWeight: "800", textAlign: "center" },
+  videoPickerSub:     { fontSize: 13, fontWeight: "500", textAlign: "center" },
+  videoPickerBtn:     {
+    flexDirection: "row", alignItems: "center", gap: 7,
+    paddingHorizontal: 20, paddingVertical: 10,
+    borderRadius: 20, marginTop: 6,
+  },
+  videoPickerBtnText: { color: "#fff", fontSize: 13, fontWeight: "700" },
 
-  promptBox: {
-    borderWidth: 1,
-    borderRadius: 16,
-    padding: 22,
-    marginVertical: 10,
-    gap: 14,
-  },
+  rulesBox:   { marginHorizontal: 16, marginBottom: 16, padding: 14, borderRadius: 14, borderWidth: 1, gap: 8 },
+  rulesTitle: { fontSize: 14, fontWeight: "800", marginBottom: 4 },
+  ruleRow:    { flexDirection: "row", gap: 8, alignItems: "flex-start" },
+  ruleDot:    { fontSize: 16, lineHeight: 20 },
+  ruleText:   { fontSize: 12, fontWeight: "500", flex: 1, lineHeight: 18 },
 
-  promptTitle: {
-    fontSize: 17,
-    fontWeight: "800",
-    textAlign: "center",
-    lineHeight: 24,
-  },
+  progressBox:   { marginHorizontal: 16, marginBottom: 12, padding: 12, borderRadius: 12, borderWidth: 1, gap: 8 },
+  progressLabel: { fontSize: 12, fontWeight: "600" },
+  progressBg:    { height: 8, borderRadius: 5, overflow: "hidden" },
+  progressFill:  { height: "100%", borderRadius: 5 },
 
-  promptSub: {
-    fontSize: 13,
-    textAlign: "center",
-    lineHeight: 20,
+  submitBtn: {
+    marginHorizontal: 16, marginBottom: 16,
+    flexDirection: "row", alignItems: "center", justifyContent: "center",
+    gap: 8, paddingVertical: 16, borderRadius: 16,
   },
-
-  promptBtnYes: {
-    padding: 14,
-    borderRadius: 12,
-    alignItems: "center",
-  },
-
-  promptBtnNo: {
-    padding: 14,
-    borderRadius: 12,
-    alignItems: "center",
-    backgroundColor: "transparent",
-  },
-
-  promptBtnText: {
-    color: "#fff",
-    fontWeight: "700",
-    fontSize: 14,
-  },
+  submitBtnText: { color: "#fff", fontSize: 16, fontWeight: "800" },
 });

@@ -13,6 +13,7 @@ import { auth, db } from "@/lib/firebase";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { signOut } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { useEffect, useState } from "react";
@@ -62,6 +63,9 @@ export default function DrawerLayout() {
   const profilePic = studentProfile?.profilePic || null;
 
   const handleLogout = async () => {
+    if (auth.currentUser?.email) {
+      await AsyncStorage.setItem("lastEmail", auth.currentUser.email);
+    }
     await signOut(auth);
     router.replace("/login");
   };

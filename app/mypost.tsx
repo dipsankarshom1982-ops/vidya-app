@@ -1,4 +1,5 @@
 import PostCard from "@/components/ProfilePostCard";
+import { useTheme } from "@/context/ThemeContext";
 import { auth, db } from "@/lib/firebase";
 import {
   collection,
@@ -20,6 +21,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function MyPostScreen() {
+  const { colors } = useTheme();
   const [userData, setUserData] = useState<any>(null);
   const [posts, setPosts] = useState<any[]>([]);
 
@@ -78,11 +80,11 @@ export default function MyPostScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+
       {/* 🔹 PROFILE */}
       {userData && (
-        <View style={styles.profileBox}>
+        <View style={[styles.profileBox, { borderColor: colors.border }]}>
           <Image
             source={{
               uri:
@@ -91,9 +93,9 @@ export default function MyPostScreen() {
             }}
             style={styles.avatar}
           />
-          <Text style={styles.name}>{userData.name}</Text>
-          <Text style={styles.info}>{userData.school}</Text>
-          <Text style={styles.info}>{userData.district}</Text>
+          <Text style={[styles.name, { color: colors.text }]}>{userData.name}</Text>
+          <Text style={[styles.info, { color: colors.textSecondary }]}>{userData.school}</Text>
+          <Text style={[styles.info, { color: colors.textSecondary }]}>{userData.district}</Text>
         </View>
       )}
 
@@ -109,7 +111,7 @@ export default function MyPostScreen() {
           />
         )}
         ListEmptyComponent={
-          <Text style={styles.empty}>No posts yet</Text>
+          <Text style={[styles.empty, { color: colors.text }]}>No posts yet</Text>
         }
       />
     </SafeAreaView>
@@ -119,13 +121,11 @@ export default function MyPostScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#0f172a",
   },
   profileBox: {
     alignItems: "center",
     padding: 20,
     borderBottomWidth: 1,
-    borderColor: "#334155",
   },
   avatar: {
     width: 90,
@@ -133,16 +133,12 @@ const styles = StyleSheet.create({
     borderRadius: 45,
   },
   name: {
-    color: "#fff",
     fontSize: 18,
     fontWeight: "bold",
     marginTop: 10,
   },
-  info: {
-    color: "#94a3b8",
-  },
+  info: {},
   empty: {
-    color: "#fff",
     textAlign: "center",
     marginTop: 20,
   },

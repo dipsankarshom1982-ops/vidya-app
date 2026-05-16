@@ -25,9 +25,9 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 // ─── Constants ─────────────────────────────────────────────
 const CLASS_OPTIONS: string[] = [
-  "Class 4", "Class 5", "Class 6", "Class 7", "Class 8",
-  "Class 9", "Class 10", "Class 11", "Class 12",
-  "1st Year", "2nd Year", "3rd Year", "Bachelor Degree",
+  "4", "5", "6", "7", "8",
+  "9", "10", "11", "12",
+  
 ];
 
 const LANGUAGES: string[] = [
