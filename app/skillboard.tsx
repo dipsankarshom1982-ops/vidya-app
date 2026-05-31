@@ -4,11 +4,13 @@ import { auth, db } from "@/lib/firebase";
 import { claimSkillBattleRewards } from "@/services/vCoinsService";
 import { getVCoinForRank, VCOIN_DIST_PCT } from "@/utils/formatVCoins";
 import { LinearGradient } from "expo-linear-gradient";
+import { useRouter } from "expo-router";
 import {
   collection,
   doc,
   getDoc,
   getDocs,
+  orderBy,
   query,
   where,
 } from "firebase/firestore";
@@ -18,6 +20,7 @@ import {
   Animated,
   FlatList,
   Image,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -29,6 +32,64 @@ import { SafeAreaView } from "react-native-safe-area-context";
 // ─── Types ────────────────────────────────────────────────────
 type LocationScope = "local" | "district" | "state" | "india";
 type MonthKey      = string; // "2026-05"
+type BoardMode     = "skillbattle" | "vidyastar";
+type VsPeriodType  = "daily" | "weekly" | "monthly" | "yearly";
+
+// ─── VidyaStar period helpers ──────────────────────────────────
+const vspad = (n: number) => String(n).padStart(2, "0");
+function vsWeekNum(d: Date) {
+  const oneJan = new Date(d.getFullYear(), 0, 1);
+  return Math.ceil(((d.getTime() - oneJan.getTime()) / 86400000 + oneJan.getDay() + 1) / 7);
+}
+function vsBuildPeriodKey(type: VsPeriodType, offset = 0): string {
+  const d = new Date();
+  if (type === "daily") {
+    d.setDate(d.getDate() - offset);
+    return `daily_${d.getFullYear()}-${vspad(d.getMonth()+1)}-${vspad(d.getDate())}`;
+  }
+  if (type === "weekly") {
+    d.setDate(d.getDate() - offset * 7);
+    return `weekly_${d.getFullYear()}-W${vspad(vsWeekNum(d))}`;
+  }
+  if (type === "monthly") {
+    d.setMonth(d.getMonth() - offset);
+    return `monthly_${d.getFullYear()}-${vspad(d.getMonth()+1)}`;
+  }
+  return `yearly_${d.getFullYear() - offset}`;
+}
+function vsPeriodLabel(key: string): string {
+  if (key.startsWith("daily_"))   return key.replace("daily_",   "");
+  if (key.startsWith("weekly_"))  return key.replace("weekly_",  "");
+  if (key.startsWith("monthly_")) {
+    const [y, m] = key.replace("monthly_", "").split("-");
+    return new Date(Number(y), Number(m) - 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+  }
+  return key.replace("yearly_", "");
+}
+
+interface VsBoardEntry {
+  userId: string; name: string; profilePic: string;
+  school: string; class: string;
+  period: string; totalScore: number; contestCount: number; rank: number;
+}
+
+interface VsPrizeRow {
+  rankMin: number; rankMax: number;
+  prizeType: "gift_voucher" | "physical" | "vcoin";
+  prizeValue: string; medalEmoji: string; badge: string;
+}
+
+interface VsConfig {
+  period: VsPeriodType; periodKey: string;
+  entryFee: number; totalPool: number; prizeRows: VsPrizeRow[];
+}
+
+const VS_PERIOD_TYPES: { key: VsPeriodType; label: string; icon: string }[] = [
+  { key: "daily",   label: "Daily",   icon: "📅" },
+  { key: "weekly",  label: "Weekly",  icon: "🗓️" },
+  { key: "monthly", label: "Monthly", icon: "📆" },
+  { key: "yearly",  label: "Yearly",  icon: "🏆" },
+];
 
 interface RanksMap {
   local: number; district: number; state: number; india: number;
@@ -200,6 +261,18 @@ const getCashPrize = (prizes: CashPrizeRow[], rank: number): string => {
 // ─── Component ────────────────────────────────────────────────
 export default function SkillboardScreen() {
   const { colors } = useTheme();
+  const router = useRouter();
+
+  // ── Board mode toggle ─────────────────────────────────────
+  const [boardMode,      setBoardMode]      = useState<BoardMode>("skillbattle");
+
+  // ── VidyaStar state ───────────────────────────────────────
+  const [vsPeriodType,   setVsPeriodType]   = useState<VsPeriodType>("monthly");
+  const [vsPeriodKey,    setVsPeriodKey]    = useState(vsBuildPeriodKey("monthly"));
+  const [vsEntries,      setVsEntries]      = useState<VsBoardEntry[]>([]);
+  const [vsConfig,       setVsConfig]       = useState<VsConfig | null>(null);
+  const [vsLoading,      setVsLoading]      = useState(false);
+  const [vsRefreshing,   setVsRefreshing]   = useState(false);
 
   const [activeScope,    setActiveScope]    = useState<LocationScope>("india");
   const [activeMonth,    setActiveMonth]    = useState<MonthKey>(getAvailableMonths()[0]);
@@ -464,6 +537,38 @@ export default function SkillboardScreen() {
       ]).start();
     }).catch(() => { /* silent — user can claim next time */ });
   }, [battle, myRanks, activeMonth, claimToastAnim]);
+
+  // ── 6. VidyaStar data loading ─────────────────────────────
+  const loadVidyastar = useCallback(async () => {
+    setVsLoading(true);
+    try {
+      const [boardSnap, configSnap] = await Promise.all([
+        getDocs(query(
+          collection(db, "vidyastarBoard"),
+          where("period", "==", vsPeriodKey),
+          orderBy("totalScore", "desc")
+        )),
+        getDoc(doc(db, "vidyastarConfig", vsPeriodKey)),
+      ]);
+      setVsEntries(boardSnap.docs.map((d) => ({ ...d.data() } as VsBoardEntry)));
+      setVsConfig(configSnap.exists() ? (configSnap.data() as VsConfig) : null);
+    } catch (e) {
+      console.log("loadVidyastar:", e);
+      setVsEntries([]);
+    } finally {
+      setVsLoading(false);
+    }
+  }, [vsPeriodKey]);
+
+  useEffect(() => {
+    if (boardMode === "vidyastar") loadVidyastar();
+  }, [boardMode, loadVidyastar]);
+
+  const onVsRefresh = async () => {
+    setVsRefreshing(true);
+    await loadVidyastar();
+    setVsRefreshing(false);
+  };
 
   // ─── Render helpers ───────────────────────────────────────
 
@@ -955,6 +1060,225 @@ export default function SkillboardScreen() {
           <Text style={styles.spRibbonText}>SP</Text>
         </View>
       </View>
+    );
+  };
+
+  // ── VidyaStar tab renderer ────────────────────────────────
+  const renderVidyaStarTab = () => {
+    const myUid    = auth.currentUser?.uid;
+    const myEntry  = vsEntries.find((e) => e.userId === myUid) ?? null;
+    const top3     = vsEntries.slice(0, 3);
+    const rest     = vsEntries.slice(3);
+
+    const getPrize = (rank: number): string => {
+      if (!vsConfig?.prizeRows?.length || rank === 0) return "";
+      const row = vsConfig.prizeRows.find((r) => rank >= r.rankMin && rank <= r.rankMax);
+      if (!row) return "";
+      if (row.prizeType === "vcoin")        return `🪙 ${row.prizeValue}`;
+      if (row.prizeType === "gift_voucher") return `🎁 ${row.prizeValue}`;
+      return `📦 ${row.prizeValue}`;
+    };
+
+    return (
+      <ScrollView
+        contentContainerStyle={styles.listContent}
+        refreshControl={<RefreshControl refreshing={vsRefreshing} onRefresh={onVsRefresh} tintColor="#7c3aed" />}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Period type tabs */}
+        <View style={styles.vsTabRow}>
+          {VS_PERIOD_TYPES.map((pt) => (
+            <TouchableOpacity key={pt.key}
+              style={[styles.vsTab, vsPeriodType === pt.key && styles.vsTabActive]}
+              onPress={() => { setVsPeriodType(pt.key); setVsPeriodKey(vsBuildPeriodKey(pt.key)); }}
+            >
+              <Text style={styles.vsTabIcon}>{pt.icon}</Text>
+              <Text style={[styles.vsTabLabel, { color: vsPeriodType === pt.key ? "#a5b4fc" : colors.textSecondary }]}>{pt.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {/* Period chips */}
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+          {[0, 1, 2].map((offset) => {
+            const k = vsBuildPeriodKey(vsPeriodType, offset);
+            return (
+              <TouchableOpacity key={k}
+                style={[styles.monthChip, { borderColor: vsPeriodKey === k ? "#7c3aed" : "rgba(124,58,237,0.2)", backgroundColor: vsPeriodKey === k ? "rgba(124,58,237,0.3)" : "rgba(255,255,255,0.04)", marginLeft: offset === 0 ? 0 : 8 }]}
+                onPress={() => setVsPeriodKey(k)}
+              >
+                <Text style={[styles.monthChipText, { color: vsPeriodKey === k ? "#fff" : colors.textSecondary }]}>{vsPeriodLabel(k)}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+
+        {/* Config / prize card */}
+        {vsConfig ? (
+          <View style={styles.vsPrizeCard}>
+            <View style={styles.vsPrizeHeader}>
+              <View>
+                <Text style={styles.vsPrizeTitle}>🏆 VidyaStar Prizes · {vsPeriodLabel(vsPeriodKey)}</Text>
+                {vsConfig.totalPool > 0 && (
+                  <Text style={styles.vsPrizeSub}>Pool: ₹{vsConfig.totalPool} (gift vouchers)</Text>
+                )}
+              </View>
+              {vsConfig.entryFee > 0 && (
+                <View style={styles.vsEntryBadge}>
+                  <Text style={styles.vsEntryText}>₹{vsConfig.entryFee} Entry</Text>
+                </View>
+              )}
+            </View>
+            {vsConfig.prizeRows?.map((row, i) => {
+              const myRank = myEntry?.rank ?? 0;
+              const isMe   = myRank > 0 && myRank >= row.rankMin && myRank <= row.rankMax;
+              return (
+                <View key={i} style={[styles.vsPrizeRow, isMe && { backgroundColor: "rgba(124,58,237,0.12)" }]}>
+                  <Text style={styles.vsMedal}>{row.medalEmoji}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.vsRankLabel, { color: colors.text }]}>
+                      {row.rankMin === row.rankMax ? `Rank ${row.rankMin}` : `Rank ${row.rankMin}–${row.rankMax}`}
+                      {isMe ? <Text style={styles.vsYouTag}> ← YOU</Text> : null}
+                    </Text>
+                    {!!row.badge && <Text style={styles.vsBadge}>{row.badge}</Text>}
+                  </View>
+                  <Text style={[styles.vsPrizeValue,
+                    row.prizeType === "gift_voucher" && { color: "#10b981" },
+                    row.prizeType === "physical"     && { color: "#f59e0b" },
+                    row.prizeType === "vcoin"        && { color: "#63b3ed" },
+                  ]}>
+                    {row.prizeType === "gift_voucher" ? `🎁 ${row.prizeValue}`
+                      : row.prizeType === "physical" ? `📦 ${row.prizeValue}`
+                      : `🪙 ${row.prizeValue}`}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+        ) : (
+          <View style={[styles.vsPrizeCard, { paddingVertical: 16, alignItems: "center" }]}>
+            <Text style={{ color: colors.textSecondary, fontSize: 12 }}>No prize config for this period yet</Text>
+          </View>
+        )}
+
+        {/* My card */}
+        {myEntry && (
+          <View style={[styles.vsMyCard, { borderColor: "#7c3aed55" }]}>
+            <Text style={styles.vsMyName}>🎯 {myEntry.name || "You"}</Text>
+            <View style={styles.vsMyRow}>
+              <View style={styles.vsMyBox}>
+                <Text style={styles.vsMyVal}>{myEntry.totalScore}</Text>
+                <Text style={styles.vsMyLbl}>Total Pts</Text>
+              </View>
+              <View style={styles.vsMyBox}>
+                <Text style={styles.vsMyVal}>#{myEntry.rank}</Text>
+                <Text style={styles.vsMyLbl}>Rank</Text>
+              </View>
+              <View style={styles.vsMyBox}>
+                <Text style={styles.vsMyVal}>{myEntry.contestCount}</Text>
+                <Text style={styles.vsMyLbl}>Contests</Text>
+              </View>
+              {!!getPrize(myEntry.rank) && (
+                <View style={styles.vsMyBox}>
+                  <Text style={[styles.vsMyVal, { fontSize: 11, color: "#10b981" }]}>{getPrize(myEntry.rank)}</Text>
+                  <Text style={styles.vsMyLbl}>Prize</Text>
+                </View>
+              )}
+            </View>
+          </View>
+        )}
+
+        {/* Loading */}
+        {vsLoading && (
+          <View style={styles.centered}>
+            <ActivityIndicator size="large" color="#7c3aed" />
+            <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Loading rankings…</Text>
+          </View>
+        )}
+
+        {/* Empty */}
+        {!vsLoading && vsEntries.length === 0 && (
+          <View style={styles.centered}>
+            <Text style={{ fontSize: 44 }}>⭐</Text>
+            <Text style={[styles.emptyTitle, { color: colors.text }]}>No rankings yet</Text>
+            <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
+              Complete VidyaStar quizzes{"\n"}to appear on this board!
+            </Text>
+          </View>
+        )}
+
+        {/* Podium top 3 */}
+        {!vsLoading && top3.length > 0 && (
+          <View style={styles.podiumRow}>
+            {[top3[1], top3[0], top3[2]].filter(Boolean).map((entry, i) => {
+              const r = [2, 1, 3][i];
+              const medals = ["🥈", "🥇", "🥉"];
+              const heights = [90, 120, 72];
+              const barColors = ["#a8a8c0CC", "#FFD700DD", "#cd7f32CC"];
+              const prize = getPrize(r);
+              return (
+                <View key={entry.userId} style={styles.podiumItem}>
+                  <View style={styles.podiumAvatarWrap}>
+                    {r === 1 && <Text style={styles.crown}>👑</Text>}
+                    {entry.profilePic ? (
+                      <Image source={{ uri: entry.profilePic }} style={[styles.podiumAvatar, r === 1 && styles.podiumAvatarLarge, { borderColor: getMedalColor(r) }]} />
+                    ) : (
+                      <View style={[styles.podiumAvatarPlaceholder, r === 1 && styles.podiumAvatarLarge, { borderColor: getMedalColor(r), backgroundColor: "rgba(124,58,237,0.25)" }]}>
+                        <Text style={[styles.podiumInitial, { color: "#a78bfa" }]}>{(entry.name || "S").charAt(0).toUpperCase()}</Text>
+                      </View>
+                    )}
+                    <Text style={styles.podiumMedal}>{medals[i]}</Text>
+                  </View>
+                  <Text style={[styles.podiumName, { color: colors.text }]} numberOfLines={1}>{entry.name || "Student"}</Text>
+                  <Text style={[styles.podiumScore, { color: "#a78bfa" }]}>{entry.totalScore} pts</Text>
+                  {!!prize && <Text style={[styles.podiumReward, { color: "#10b981", backgroundColor: "rgba(16,185,129,0.1)" }]}>{prize}</Text>}
+                  <View style={[styles.podiumBar, { height: heights[i], backgroundColor: barColors[i] }]} />
+                </View>
+              );
+            })}
+          </View>
+        )}
+
+        {/* Rest of list */}
+        {!vsLoading && rest.map((entry, i) => {
+          const rank  = i + 4;
+          const isMe  = entry.userId === myUid;
+          const prize = getPrize(rank);
+          return (
+            <View key={entry.userId} style={[styles.row, { backgroundColor: colors.card, borderColor: colors.border }, isMe && { backgroundColor: "rgba(124,58,237,0.1)", borderColor: "rgba(124,58,237,0.5)" }]}>
+              <View style={styles.rowAvatarCol}>
+                {entry.profilePic ? (
+                  <Image source={{ uri: entry.profilePic }} style={styles.rowAvatar} />
+                ) : (
+                  <View style={[styles.rowAvatarPlaceholder, { backgroundColor: "rgba(124,58,237,0.2)" }]}>
+                    <Text style={[styles.rowAvatarInitial, { color: "#a78bfa" }]}>{(entry.name || "S").charAt(0).toUpperCase()}</Text>
+                  </View>
+                )}
+              </View>
+              <View style={styles.rowInfoCol}>
+                <Text style={[styles.rowName, { color: colors.text }]} numberOfLines={1}>
+                  {entry.name || "Student"}{isMe ? <Text style={styles.youTag}> YOU</Text> : null}
+                </Text>
+                <Text style={[styles.rowSub, { color: colors.textSecondary }]}>{entry.school} · Class {entry.class}</Text>
+                <Text style={[styles.rowSub, { color: colors.textSecondary }]}>{entry.contestCount} contest{entry.contestCount !== 1 ? "s" : ""}</Text>
+              </View>
+              <View style={styles.rowScoreCol}>
+                <Text style={[styles.rowScore, { color: "#a78bfa" }]}>{entry.totalScore}</Text>
+                <Text style={[styles.rowScoreLbl, { color: colors.textSecondary }]}>pts</Text>
+              </View>
+              <View style={styles.rowRankCol}>
+                {rank <= 3 ? <Text style={styles.rowRankEmoji}>{getMedalEmoji(rank)}</Text>
+                  : <Text style={[styles.rowRankNum, { color: colors.textSecondary }]}>#{rank}</Text>}
+              </View>
+              <View style={styles.rowRewardCol}>
+                {!!prize && <Text style={[styles.rowReward, { color: "#10b981", backgroundColor: "rgba(16,185,129,0.08)" }]}>{prize}</Text>}
+              </View>
+            </View>
+          );
+        })}
+
+        <View style={{ height: 40 }} />
+      </ScrollView>
     );
   };
 

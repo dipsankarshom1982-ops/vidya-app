@@ -61,6 +61,9 @@ export { createAdmin, removeAdmin, approveContent, createCoupon, createComboPlan
 // ── Contest Lesson Generation ──────────────────────────────────────────────────
 export { generateContestLesson } from "./contestLesson";
 
+// ── VidyaStar Board Aggregation ───────────────────────────────────────────────
+export { onContestParticipantWrite } from "./vidyastarBoard";
+
 // ───────────────────────────────────────────────────────────
 // TYPES
 // ───────────────────────────────────────────────────────────

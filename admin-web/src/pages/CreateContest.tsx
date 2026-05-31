@@ -8,10 +8,25 @@ import ToggleSwitch from "../components/ToggleSwitch";
 
 const ALL_CLASSES = ["6","7","8","9","10","11","12","all"];
 const TYPES = ["quiz","essay","project","skill_battle"];
+
+// Period key helpers
+const pad = (n: number) => String(n).padStart(2, "0");
+function getWeekNumber(d: Date) {
+  const oneJan = new Date(d.getFullYear(), 0, 1);
+  return Math.ceil(((d.getTime() - oneJan.getTime()) / 86400000 + oneJan.getDay() + 1) / 7);
+}
+const buildPeriodKey = (type: string, d = new Date()) => {
+  if (type === "daily")   return `daily_${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  if (type === "weekly")  return `weekly_${d.getFullYear()}-W${pad(getWeekNumber(d))}`;
+  if (type === "monthly") return `monthly_${d.getFullYear()}-${pad(d.getMonth()+1)}`;
+  return `yearly_${d.getFullYear()}`;
+};
+
 const EMPTY = {
   title: "", description: "", rules: "", contestType: "quiz",
   startDate: "", endDate: "", prizePool: 0, totalSpots: 100,
   targetClass: ["all"] as string[], isActive: false,
+  entryFee: 0, periodType: "monthly", periodKey: buildPeriodKey("monthly"),
 };
 
 const CLOUD_FUNCTION_URL =
@@ -82,8 +97,9 @@ export default function CreateContest() {
     try {
       const payload = {
         ...form,
-        prizePool: Number(form.prizePool),
+        prizePool:  Number(form.prizePool),
         totalSpots: Number(form.totalSpots),
+        entryFee:   Number(form.entryFee),
         updatedAt: serverTimestamp(),
       };
       let newId = savedId;
@@ -164,6 +180,22 @@ export default function CreateContest() {
           <div><label className={labelCls}>End Date</label><input type="datetime-local" value={form.endDate} onChange={(e) => set("endDate", e.target.value)} className={inputCls} /></div>
         </div>
         <div><label className={labelCls}>Prize Pool (₹)</label><input type="number" min={0} value={form.prizePool} onChange={(e) => set("prizePool", e.target.value)} className={inputCls} /></div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className={labelCls}>Entry Fee (₹) — 0 = Free</label>
+            <input type="number" min={0} value={form.entryFee} onChange={(e) => set("entryFee", e.target.value)} className={inputCls} />
+          </div>
+          <div>
+            <label className={labelCls}>Period Type <span className="text-slate-500 font-normal">(for VidyaStar leaderboard)</span></label>
+            <select value={form.periodType} onChange={(e) => { set("periodType", e.target.value); set("periodKey", buildPeriodKey(e.target.value)); }} className={inputCls}>
+              {["daily","weekly","monthly","yearly"].map((t) => <option key={t} value={t}>{t.charAt(0).toUpperCase()+t.slice(1)}</option>)}
+            </select>
+          </div>
+        </div>
+        <div>
+          <label className={labelCls}>Period Key <span className="text-indigo-400 text-xs">(auto-filled · links to VidyaStar prize config)</span></label>
+          <input value={form.periodKey} onChange={(e) => set("periodKey", e.target.value)} className={inputCls} />
+        </div>
         <div>
           <label className={labelCls}>Target Class</label>
           <div className="flex flex-wrap gap-2">
